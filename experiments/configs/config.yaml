@@ -1,0 +1,29 @@
+wandb_version: 1
+
+dataset:
+  value: her2st
+n_folds:
+  value: 8
+
+phase:
+  value: train
+l2_weight_decay:
+  value: 0.01
+lr:
+  value: 0.001
+lr_decay_iters:
+  value: 50
+lr_policy:
+  value: cosine
+num_workers:
+  value: 4
+batch_size:
+  value: 8
+n_epochs:
+  value: 50
+
+image_encoder:
+  value: ctranspath
+
+seed:
+  value: 1078
