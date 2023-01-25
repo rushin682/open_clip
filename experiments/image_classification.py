@@ -237,6 +237,8 @@ def main():
         getattr(model, linear_keyword).bias.data.zero_()
         parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
         assert len(parameters) == 2  # weight, bias
+
+        model.to(device)
     else:
         raise ValueError('Invalid Encoder type')
 
