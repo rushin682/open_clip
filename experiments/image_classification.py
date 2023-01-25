@@ -238,7 +238,7 @@ def main():
         parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
         assert len(parameters) == 2  # weight, bias
 
-        model.to(device)
+        model = model.to(device)
     else:
         raise ValueError('Invalid Encoder type')
 
