@@ -72,8 +72,10 @@ def eval(model, device, loader, evaluator):
     y_pred = []
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
 
-        batch = batch.to(device)
+        # batch = batch.to(device)
         images, _, labels = batch
+        images = images.to(device)
+        labels = labels.to(device)
 
         with torch.no_grad():
             pred = model(images)
