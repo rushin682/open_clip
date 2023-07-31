@@ -2,6 +2,7 @@ import glob
 import logging
 import os
 import re
+import subprocess
 import sys
 import random
 from datetime import datetime
@@ -26,13 +27,14 @@ try:
 except ImportError:
     hvd = None
 
-from open_clip import create_model_and_transforms, trace_model, get_tokenizer
+from open_clip import create_model_and_transforms, trace_model, get_tokenizer, create_loss
 from training.data import get_data
 from training.distributed import is_master, init_distributed_device, broadcast_object
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr, const_lr, const_lr_cooldown
 from training.train import train_one_epoch, evaluate
+from training.file_utils import pt_load, check_exists, start_sync_process, remote_sync
 
 
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
@@ -49,9 +51,16 @@ def natural_key(string_):
     return [int(s) if s.isdigit() else s for s in re.split(r'(\d+)', string_.lower())]
 
 
-def get_latest_checkpoint(path: str):
+def get_latest_checkpoint(path: str, remote : bool):
     # as writen, this glob recurses, so can pick up checkpoints across multiple sub-folders
-    checkpoints = glob.glob(path + '**/*.pt', recursive=True)
+    if remote:
+        result = subprocess.run(["aws", "s3", "ls", path + "/"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(result)
+        if result.returncode == 1:
+            return None
+        checkpoints = [os.path.join(path, x.split(' ')[-1]) for x in result.stdout.decode().split('\n')[:-1]]
+    else:
+        checkpoints = glob.glob(path + '**/*.pt', recursive=True)
     if checkpoints:
         checkpoints = sorted(checkpoints, key=natural_key)
         return checkpoints[-1]
@@ -69,21 +78,20 @@ def main(args):
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
 
-    # sanitize model name for filesystem / uri use, easier if we don't use / in name as a rule?
-    args.model = args.model.replace('/', '-')
-
     # fully initialize distributed device environment
     device = init_distributed_device(args)
 
     # get the name of the experiments
     if args.name is None:
+        # sanitize model name for filesystem / uri use, easier if we don't use / in name as a rule?
+        model_name_safe = args.model.replace('/', '-')
         date_str = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
         if args.distributed:
             # sync date_str from master to all ranks
             date_str = broadcast_object(args, date_str)
         args.name = '-'.join([
             date_str,
-            f"model_{args.model}",
+            f"model_{model_name_safe}",
             f"lr_{args.lr}",
             f"b_{args.batch_size}",
             f"j_{args.workers}",
@@ -121,23 +129,33 @@ def main(args):
 
     if resume_latest:
         resume_from = None
+        checkpoint_path = args.checkpoint_path
+        # If using remote_sync, need to check the remote instead of the local checkpoints folder.
+        if args.remote_sync is not None:
+            checkpoint_path = os.path.join(args.remote_sync, args.name, "checkpoints")
+            if args.save_most_recent:
+                print('Error. Cannot use save-most-recent with remote_sync and resume latest.')
+                return -1
+            if args.remote_sync_protocol != 's3':
+                print('Error. Sync protocol not supported when using resume latest.')
+                return -1
         if is_master(args):
             # Checking for existing checkpoint via master rank only. It is possible for
             # different rank processes to see different files if a shared file-system is under
             # stress, however it's very difficult to fully work around such situations.
             if args.save_most_recent:
                 # if --save-most-recent flag is set, look for latest at a fixed filename
-                resume_from = os.path.join(args.checkpoint_path, LATEST_CHECKPOINT_NAME)
+                resume_from = os.path.join(checkpoint_path, LATEST_CHECKPOINT_NAME)
                 if not os.path.exists(resume_from):
                     # If no latest checkpoint has been saved yet, don't try to resume
                     resume_from = None
             else:
                 # otherwise, list checkpoint dir contents and pick the newest checkpoint
-                resume_from = get_latest_checkpoint(args.checkpoint_path)
+                resume_from = get_latest_checkpoint(checkpoint_path, remote=args.remote_sync is not None)
             if resume_from:
                 logging.info(f'Found latest resume checkpoint at {resume_from}.')
             else:
-                logging.info(f'No latest resume checkpoint found in {args.checkpoint_path}.')
+                logging.info(f'No latest resume checkpoint found in {checkpoint_path}.')
         if args.distributed:
             # sync found checkpoint path to all ranks
             resume_from = broadcast_object(args, resume_from)
@@ -145,6 +163,29 @@ def main(args):
 
     if args.copy_codebase:
         copy_codebase(args)
+
+    # start the sync proces if remote-sync is not None
+    remote_sync_process = None
+    if is_master(args) and args.remote_sync is not None:
+        # first make sure it works
+        result = remote_sync(
+            os.path.join(args.logs, args.name), 
+            os.path.join(args.remote_sync, args.name), 
+            args.remote_sync_protocol
+        )
+        if result:
+            logging.info('remote sync successful.')
+        else:
+            logging.info('Error: remote sync failed. Exiting.')
+            return -1
+        # if all looks good, start a process to do this every args.remote_sync_frequency seconds
+        remote_sync_process = start_sync_process(
+            args.remote_sync_frequency,
+            os.path.join(args.logs, args.name), 
+            os.path.join(args.remote_sync, args.name), 
+            args.remote_sync_protocol
+        )
+        remote_sync_process.start()
 
     if args.precision == 'fp16':
         logging.warning(
@@ -162,6 +203,17 @@ def main(args):
     else:
         logging.info(f'Running with a single process. Device {args.device}.')
 
+    dist_model = None
+    args.distill = args.distill_model is not None and args.distill_pretrained is not None
+    if args.distill:
+        #FIXME: support distillation with grad accum.
+        assert args.accum_freq == 1
+        #FIXME: support distillation with coca.
+        assert 'coca' not in args.model.lower()
+
+    if isinstance(args.force_image_size, (tuple, list)) and len(args.force_image_size) == 1:
+        # arg is nargs, single (square) image size list -> int
+        args.force_image_size = args.force_image_size[0]
     random_seed(args.seed, 0)
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
@@ -172,10 +224,34 @@ def main(args):
         force_quick_gelu=args.force_quick_gelu,
         force_custom_text=args.force_custom_text,
         force_patch_dropout=args.force_patch_dropout,
+        force_image_size=args.force_image_size,
         pretrained_image=args.pretrained_image,
         image_mean=args.image_mean,
         image_std=args.image_std,
+        aug_cfg=args.aug_cfg,
+        output_dict=True,
     )
+    if args.distill:
+        # FIXME: currenlty assumes the model your distilling from has the same tokenizer & transforms.
+        dist_model, _, _ = create_model_and_transforms(
+            args.distill_model, 
+            args.distill_pretrained,
+            device=device,
+            precision=args.precision,
+            output_dict=True,
+        )
+    if args.use_bnb_linear is not None:
+        print('=> using a layer from bitsandbytes.\n'
+              '   this is an experimental feature which requires two extra pip installs\n'
+              '   pip install bitsandbytes triton'
+              '   please make sure to use triton 2.0.0')
+        import bitsandbytes as bnb
+        from open_clip.utils import replace_linear
+        print(f'=> replacing linear layers with {args.use_bnb_linear}')
+        linear_replacement_cls = getattr(bnb.nn.triton_based_modules, args.use_bnb_linear)
+        replace_linear(model, linear_replacement_cls)
+        model = model.to(device)
+
     random_seed(args.seed, args.rank)
 
     if args.trace:
@@ -213,6 +289,9 @@ def main(args):
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
+    
+        if args.distill:
+            dist_model = torch.nn.parallel.DistributedDataParallel(dist_model, device_ids=[device], **ddp_args)
 
     # create optimizer and scaler
     optimizer = None
@@ -247,7 +326,7 @@ def main(args):
     # optionally resume from a checkpoint
     start_epoch = 0
     if args.resume is not None:
-        checkpoint = torch.load(args.resume, map_location='cpu')
+        checkpoint = pt_load(args.resume, map_location='cpu')
         if 'epoch' in checkpoint:
             # resuming a train checkpoint w/ epoch and optimizer state
             start_epoch = checkpoint["epoch"]
@@ -317,15 +396,26 @@ def main(args):
         wandb.save(params_file)
         logging.debug('Finished loading wandb.')
 
+    if args.torchcompile:
+        logging.info('Compiling model...')
+        model = torch.compile(model)
+
     if 'train' not in data:
+        # If using int8, convert to inference mode.
+        if args.use_bnb_linear is not None:
+            from open_clip.utils import convert_int8_model_to_inference_mode
+            convert_int8_model_to_inference_mode(model)
+        # Evaluate.
         evaluate(model, data, start_epoch, args, writer)
         return
+
+    loss = create_loss(args)
 
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
@@ -349,6 +439,11 @@ def main(args):
                     checkpoint_dict,
                     os.path.join(args.checkpoint_path, f"epoch_{completed_epoch}.pt"),
                 )
+            if args.delete_previous_checkpoint:
+                previous_checkpoint = os.path.join(args.checkpoint_path, f"epoch_{completed_epoch - 1}.pt")
+                if os.path.exists(previous_checkpoint):
+                    os.remove(previous_checkpoint)
+
             if args.save_most_recent:
                 # try not to corrupt the latest checkpoint if save fails
                 tmp_save_path = os.path.join(args.checkpoint_path, "tmp.pt")
@@ -359,6 +454,20 @@ def main(args):
     if args.wandb and is_master(args):
         wandb.finish()
 
+    # run a final sync.
+    if remote_sync_process is not None:
+        logging.info('Final remote sync.')
+        remote_sync_process.terminate()
+        result = remote_sync(
+            os.path.join(args.logs, args.name), 
+            os.path.join(args.remote_sync, args.name), 
+            args.remote_sync_protocol
+        )
+        if result:
+            logging.info('Final remote sync successful.')
+        else:
+            logging.info('Final remote sync failed.')
+    
 
 def copy_codebase(args):
     from shutil import copytree, ignore_patterns

@@ -83,7 +83,23 @@ _VITB32 = dict(
         "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_32-quickgelu-laion400m_e32-46683a32.pt"),
     laion2b_e16=_pcfg(
         "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_32-laion2b_e16-af8dbd0c.pth"),
-    laion2b_s34b_b79k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-laion2B-s34B-b79K/')
+    laion2b_s34b_b79k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-laion2B-s34B-b79K/'),
+    # DataComp-M models
+    datacomp_m_s128m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-DataComp.M-s128M-b4K/'),
+    commonpool_m_clip_s128m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.M.clip-s128M-b4K/'),
+    commonpool_m_laion_s128m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.M.laion-s128M-b4K/'),
+    commonpool_m_image_s128m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.M.image-s128M-b4K/'),
+    commonpool_m_text_s128m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.M.text-s128M-b4K/'),
+    commonpool_m_basic_s128m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.M.basic-s128M-b4K/'),
+    commonpool_m_s128m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.M-s128M-b4K/'),
+    # DataComp-S models
+    datacomp_s_s13m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-DataComp.S-s13M-b4K/'),
+    commonpool_s_clip_s13m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.S.clip-s13M-b4K/'),
+    commonpool_s_laion_s13m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.S.laion-s13M-b4K/'),
+    commonpool_s_image_s13m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.S.image-s13M-b4K/'),
+    commonpool_s_text_s13m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.S.text-s13M-b4K/'),
+    commonpool_s_basic_s13m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.S.basic-s13M-b4K/'),
+    commonpool_s_s13m_b4k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-CommonPool.S-s13M-b4K/'),
 )
 
 _VITB32_quickgelu = dict(
@@ -102,12 +118,15 @@ _VITB16 = dict(
         "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_16-laion400m_e31-00efa78f.pt"),
     laion400m_e32=_pcfg(
         "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_16-laion400m_e32-55e67d44.pt"),
-    # laion400m_32k=_pcfg(
-    #     url="",
-    #     mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-    # laion400m_64k=_pcfg(
-    #     url="",
-    #     mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+    laion2b_s34b_b88k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-laion2B-s34B-b88K/'),
+    # DataComp-L models
+    datacomp_l_s1b_b8k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-DataComp.L-s1B-b8K/'),
+    commonpool_l_clip_s1b_b8k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-CommonPool.L.clip-s1B-b8K/'),
+    commonpool_l_laion_s1b_b8k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-CommonPool.L.laion-s1B-b8K/'),
+    commonpool_l_image_s1b_b8k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-CommonPool.L.image-s1B-b8K/'),
+    commonpool_l_text_s1b_b8k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-CommonPool.L.text-s1B-b8K/'),
+    commonpool_l_basic_s1b_b8k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-CommonPool.L.basic-s1B-b8K/'),
+    commonpool_l_s1b_b8k=_pcfg(hf_hub='laion/CLIP-ViT-B-16-CommonPool.L-s1B-b8K/'),
 )
 
 _VITB16_PLUS_240 = dict(
@@ -127,6 +146,11 @@ _VITL14 = dict(
     laion2b_s32b_b82k=_pcfg(
         hf_hub='laion/CLIP-ViT-L-14-laion2B-s32B-b82K/',
         mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+    # DataComp-XL models
+    datacomp_xl_s13b_b90k=_pcfg(hf_hub='laion/CLIP-ViT-L-14-DataComp.XL-s13B-b90K/'),
+    commonpool_xl_clip_s13b_b90k=_pcfg(hf_hub='laion/CLIP-ViT-L-14-CommonPool.XL.clip-s13B-b90K/'),
+    commonpool_xl_laion_s13b_b90k=_pcfg(hf_hub='laion/CLIP-ViT-L-14-CommonPool.XL.laion-s13B-b90K/'),
+    commonpool_xl_s13b_b90k=_pcfg(hf_hub='laion/CLIP-ViT-L-14-CommonPool.XL-s13B-b90K/'),
 )
 
 _VITL14_336 = dict(
@@ -140,6 +164,11 @@ _VITH14 = dict(
 
 _VITg14 = dict(
     laion2b_s12b_b42k=_pcfg(hf_hub='laion/CLIP-ViT-g-14-laion2B-s12B-b42K/'),
+    laion2b_s34b_b88k=_pcfg(hf_hub='laion/CLIP-ViT-g-14-laion2B-s34B-b88K/'),
+)
+
+_VITbigG14 = dict(
+    laion2b_s39b_b160k=_pcfg(hf_hub='laion/CLIP-ViT-bigG-14-laion2B-39B-b160k/'),
 )
 
 _robertaViTB32 = dict(
@@ -153,6 +182,47 @@ _xlmRobertaBaseViTB32 = dict(
 _xlmRobertaLargeFrozenViTH14 = dict(
     frozen_laion5b_s13b_b90k=_pcfg(hf_hub='laion/CLIP-ViT-H-14-frozen-xlm-roberta-large-laion5B-s13B-b90k/'),
 )
+
+_convnext_base = dict(
+    laion400m_s13b_b51k=_pcfg(hf_hub='laion/CLIP-convnext_base-laion400M-s13B-b51K/'),
+)
+
+_convnext_base_w = dict(
+    laion2b_s13b_b82k=_pcfg(hf_hub='laion/CLIP-convnext_base_w-laion2B-s13B-b82K/'),
+    laion2b_s13b_b82k_augreg=_pcfg(hf_hub='laion/CLIP-convnext_base_w-laion2B-s13B-b82K-augreg/'),
+    laion_aesthetic_s13b_b82k=_pcfg(hf_hub='laion/CLIP-convnext_base_w-laion_aesthetic-s13B-b82K/'),
+)
+
+_convnext_base_w_320 = dict(
+    laion_aesthetic_s13b_b82k=_pcfg(hf_hub='laion/CLIP-convnext_base_w_320-laion_aesthetic-s13B-b82K/'),
+    laion_aesthetic_s13b_b82k_augreg=_pcfg(hf_hub='laion/CLIP-convnext_base_w_320-laion_aesthetic-s13B-b82K-augreg/'),
+)
+
+_convnext_large_d = dict(
+    laion2b_s26b_b102k_augreg=_pcfg(hf_hub='laion/CLIP-convnext_large_d.laion2B-s26B-b102K-augreg/'),
+)
+
+_convnext_large_d_320 = dict(
+    laion2b_s29b_b131k_ft=_pcfg(hf_hub='laion/CLIP-convnext_large_d_320.laion2B-s29B-b131K-ft/'),
+    laion2b_s29b_b131k_ft_soup=_pcfg(hf_hub='laion/CLIP-convnext_large_d_320.laion2B-s29B-b131K-ft-soup/'),
+)
+
+_convnext_xxlarge = dict(
+    laion2b_s34b_b82k_augreg=_pcfg(hf_hub='laion/CLIP-convnext_xxlarge-laion2B-s34B-b82K-augreg/'),
+    laion2b_s34b_b82k_augreg_rewind=_pcfg(hf_hub='laion/CLIP-convnext_xxlarge-laion2B-s34B-b82K-augreg-rewind/'),
+    laion2b_s34b_b82k_augreg_soup=_pcfg(hf_hub='laion/CLIP-convnext_xxlarge-laion2B-s34B-b82K-augreg-soup/'),
+)
+
+_coca_VITB32 = dict(
+    laion2b_s13b_b90k=_pcfg(hf_hub='laion/CoCa-ViT-B-32-laion2B-s13B-b90k/'),
+    mscoco_finetuned_laion2b_s13b_b90k=_pcfg(hf_hub='laion/mscoco_finetuned_CoCa-ViT-B-32-laion2B-s13B-b90k/')
+)
+
+_coca_VITL14 = dict(
+    laion2b_s13b_b90k=_pcfg(hf_hub='laion/CoCa-ViT-L-14-laion2B-s13B-b90k/'),
+    mscoco_finetuned_laion2b_s13b_b90k=_pcfg(hf_hub='laion/mscoco_finetuned_CoCa-ViT-L-14-laion2B-s13B-b90k/')
+)
+
 
 _PRETRAINED = {
     "RN50": _RN50,
@@ -170,10 +240,52 @@ _PRETRAINED = {
     "ViT-L-14-336": _VITL14_336,
     "ViT-H-14": _VITH14,
     "ViT-g-14": _VITg14,
+    "ViT-bigG-14": _VITbigG14,
     "roberta-ViT-B-32": _robertaViTB32,
     "xlm-roberta-base-ViT-B-32": _xlmRobertaBaseViTB32,
     "xlm-roberta-large-ViT-H-14": _xlmRobertaLargeFrozenViTH14,
+    "convnext_base": _convnext_base,
+    "convnext_base_w": _convnext_base_w,
+    "convnext_base_w_320": _convnext_base_w_320,
+    "convnext_large_d": _convnext_large_d,
+    "convnext_large_d_320": _convnext_large_d_320,
+    "convnext_xxlarge": _convnext_xxlarge,
+    "coca_ViT-B-32": _coca_VITB32,
+    "coca_ViT-L-14": _coca_VITL14,
+    "EVA01-g-14": dict(
+        # from QuanSun/EVA-CLIP/EVA01_CLIP_g_14_psz14_s11B.pt
+        laion400m_s11b_b41k=_pcfg(hf_hub='timm/eva_giant_patch14_clip_224.laion400m_s11b_b41k/'),
+    ),
+    "EVA01-g-14-plus": dict(
+        # from QuanSun/EVA-CLIP/EVA01_CLIP_g_14_plus_psz14_s11B.pt
+        merged2b_s11b_b114k=_pcfg(hf_hub='timm/eva_giant_patch14_plus_clip_224.merged2b_s11b_b114k/'),
+    ),
+    "EVA02-B-16": dict(
+        # from QuanSun/EVA-CLIP/EVA02_CLIP_B_psz16_s8B.pt
+        merged2b_s8b_b131k=_pcfg(hf_hub='timm/eva02_base_patch16_clip_224.merged2b_s8b_b131k/'),
+    ),
+    "EVA02-L-14": dict(
+        # from QuanSun/EVA-CLIP/EVA02_CLIP_L_psz14_s4B.pt
+        merged2b_s4b_b131k=_pcfg(hf_hub='timm/eva02_large_patch14_clip_224.merged2b_s4b_b131k/'),
+    ),
+    "EVA02-L-14-336": dict(
+        # from QuanSun/EVA-CLIP/EVA02_CLIP_L_336_psz14_s6B.pt
+        merged2b_s6b_b61k=_pcfg(hf_hub='timm/eva02_large_patch14_clip_336.merged2b_s6b_b61k/'),
+    ),
+    "EVA02-E-14": dict(
+        # from QuanSun/EVA-CLIP/EVA02_CLIP_E_psz14_s4B.pt
+        laion2b_s4b_b115k=_pcfg(hf_hub='timm/eva02_enormous_patch14_clip_224.laion2b_s4b_b115k/'),
+    ),
+    "EVA02-E-14-plus": dict(
+        # from QuanSun/EVA-CLIP/EVA02_CLIP_E_psz14_plus_s9B.pt
+        laion2b_s9b_b144k=_pcfg(hf_hub='timm/eva02_enormous_patch14_plus_clip_224.laion2b_s9b_b144k/'),
+    )
 }
+
+
+def _clean_tag(tag: str):
+    # normalize pretrained tags
+    return tag.lower().replace('-', '_')
 
 
 def list_pretrained(as_str: bool = False):
@@ -186,6 +298,7 @@ def list_pretrained(as_str: bool = False):
 def list_pretrained_models_by_tag(tag: str):
     """ return all models having the specified pretrain tag """
     models = []
+    tag = _clean_tag(tag)
     for k in _PRETRAINED.keys():
         if tag in _PRETRAINED[k]:
             models.append(k)
@@ -203,18 +316,18 @@ def list_pretrained_tags_by_model(model: str):
 def is_pretrained_cfg(model: str, tag: str):
     if model not in _PRETRAINED:
         return False
-    return tag.lower() in _PRETRAINED[model]
+    return _clean_tag(tag) in _PRETRAINED[model]
 
 
 def get_pretrained_cfg(model: str, tag: str):
     if model not in _PRETRAINED:
         return {}
     model_pretrained = _PRETRAINED[model]
-    return model_pretrained.get(tag.lower(), {})
+    return model_pretrained.get(_clean_tag(tag), {})
 
 
 def get_pretrained_url(model: str, tag: str):
-    cfg = get_pretrained_cfg(model, tag)
+    cfg = get_pretrained_cfg(model, _clean_tag(tag))
     return cfg.get('url', '')
 
 

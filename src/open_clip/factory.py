@@ -5,19 +5,23 @@ import pathlib
 import re
 from copy import deepcopy
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from .model import CLIP, CustomTextCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict,\
     resize_pos_embed, get_cast_dtype
+from .coca_model import CoCa
+from .loss import ClipLoss, DistillClipLoss, CoCaLoss
 from .openai import load_openai_model
-from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrained, list_pretrained_tags_by_model
-from .transform import image_transform
+from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrained,\
+    list_pretrained_tags_by_model, download_pretrained_from_hf
+from .transform import image_transform, AugmentationCfg
 from .tokenizer import HFTokenizer, tokenize
 
 
+HF_HUB_PREFIX = 'hf-hub:'
 _MODEL_CONFIG_PATHS = [Path(__file__).parent / f"model_configs/"]
 _MODEL_CONFIGS = {}  # directory (model_name: config) of model architecture configs
 
@@ -71,8 +75,12 @@ def get_model_config(model_name):
 
 
 def get_tokenizer(model_name):
-    config = get_model_config(model_name)
-    tokenizer = HFTokenizer(config['text_cfg']['hf_tokenizer_name']) if 'hf_tokenizer_name' in config['text_cfg'] else tokenize
+    if model_name.startswith(HF_HUB_PREFIX):
+        tokenizer = HFTokenizer(model_name[len(HF_HUB_PREFIX):])
+    else:
+        config = get_model_config(model_name)
+        tokenizer = HFTokenizer(
+            config['text_cfg']['hf_tokenizer_name']) if 'hf_tokenizer_name' in config['text_cfg'] else tokenize
     return tokenizer
 
 
@@ -106,11 +114,29 @@ def create_model(
         force_quick_gelu: bool = False,
         force_custom_text: bool = False,
         force_patch_dropout: Optional[float] = None,
+        force_image_size: Optional[Union[int, Tuple[int, int]]] = None,
         pretrained_image: bool = False,
         pretrained_hf: bool = True,
         cache_dir: Optional[str] = None,
+        output_dict: Optional[bool] = None,
+        require_pretrained: bool = False,
 ):
-    model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
+    has_hf_hub_prefix = model_name.startswith(HF_HUB_PREFIX)
+    if has_hf_hub_prefix:
+        model_id = model_name[len(HF_HUB_PREFIX):]
+        checkpoint_path = download_pretrained_from_hf(model_id, cache_dir=cache_dir)
+        config_path = download_pretrained_from_hf(model_id, filename='open_clip_config.json', cache_dir=cache_dir)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        pretrained_cfg = config['preprocess_cfg']
+        model_cfg = config['model_cfg']
+    else:
+        model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
+        checkpoint_path = None
+        pretrained_cfg = {}
+        model_cfg = None
+
     if isinstance(device, str):
         device = torch.device(device)
 
@@ -120,11 +146,10 @@ def create_model(
             model_name,
             precision=precision,
             device=device,
-            jit=jit,
             cache_dir=cache_dir,
         )
     else:
-        model_cfg = get_model_config(model_name)
+        model_cfg = model_cfg or get_model_config(model_name)
         if model_cfg is not None:
             logging.info(f'Loaded {model_name} model config.')
         else:
@@ -139,24 +164,57 @@ def create_model(
             # override the default patch dropout value
             model_cfg["vision_cfg"]["patch_dropout"] = force_patch_dropout
 
+        if force_image_size is not None:
+            # override model config's image size
+            model_cfg["vision_cfg"]["image_size"] = force_image_size
+
+        is_timm_model = 'timm_model_name' in model_cfg.get('vision_cfg', {})
         if pretrained_image:
-            if 'timm_model_name' in model_cfg.get('vision_cfg', {}):
+            if is_timm_model:
                 # pretrained weight loading for timm models set via vision_cfg
                 model_cfg['vision_cfg']['timm_model_pretrained'] = True
             else:
                 assert False, 'pretrained image towers currently only supported for timm models'
 
+        # cast_dtype set for fp16 and bf16 (manual mixed-precision), not set for 'amp' or 'pure' modes
         cast_dtype = get_cast_dtype(precision)
-        custom_text = model_cfg.pop('custom_text', False) or force_custom_text or ('hf_model_name' in model_cfg.get('text_cfg', {}))
+        is_hf_model = 'hf_model_name' in model_cfg.get('text_cfg', {})
+        custom_text = model_cfg.pop('custom_text', False) or force_custom_text or is_hf_model
 
         if custom_text:
-            if 'hf_model_name' in model_cfg.get('text_cfg', {}):
+            if is_hf_model:
                 model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
-            model = CustomTextCLIP(**model_cfg, cast_dtype=cast_dtype)
+            if "coca" in model_name:
+                model = CoCa(**model_cfg, cast_dtype=cast_dtype)
+            else:
+                model = CustomTextCLIP(**model_cfg, cast_dtype=cast_dtype)
         else:
             model = CLIP(**model_cfg, cast_dtype=cast_dtype)
 
-        pretrained_cfg = {}
+        if precision in ("fp16", "bf16"):
+            dtype = torch.float16 if 'fp16' in precision else torch.bfloat16
+            # manual mixed precision that matches original OpenAI behaviour
+            if is_timm_model:
+                # FIXME this is a bit janky, create timm based model in low-precision and
+                # then cast only LayerNormFp32 instances back to float32 so they don't break.
+                # Why? The convert_weights_to_lp fn only works with native models.
+                model.to(device=device, dtype=dtype)
+                from .transformer import LayerNormFp32
+                def _convert_ln(m):
+                    if isinstance(m, LayerNormFp32):
+                        m.weight.data = m.weight.data.to(torch.float32)
+                        m.bias.data = m.bias.data.to(torch.float32)
+                model.apply(_convert_ln)
+            else:
+                model.to(device=device)
+                convert_weights_to_lp(model, dtype=dtype)
+        elif precision in ("pure_fp16", "pure_bf16"):
+            dtype = torch.float16 if 'fp16' in precision else torch.bfloat16
+            model.to(device=device, dtype=dtype)
+        else:
+            model.to(device=device)
+
+        pretrained_loaded = False
         if pretrained:
             checkpoint_path = ''
             pretrained_cfg = get_pretrained_cfg(model_name, pretrained)
@@ -174,19 +232,59 @@ def create_model(
                     f'Available pretrained tags ({list_pretrained_tags_by_model(model_name)}.')
                 logging.warning(error_str)
                 raise RuntimeError(error_str)
+            pretrained_loaded = True
+        elif has_hf_hub_prefix:
+            logging.info(f'Loading pretrained {model_name} weights ({pretrained}).')
+            load_checkpoint(model, checkpoint_path)
+            pretrained_loaded = True
 
-        model.to(device=device)
-        if precision in ("fp16", "bf16"):
-            convert_weights_to_lp(model, dtype=torch.bfloat16 if precision == 'bf16' else torch.float16)
+        if require_pretrained and not pretrained_loaded:
+            # callers of create_model_from_pretrained always expect pretrained weights
+            raise RuntimeError(
+                f'Pretrained weights were required for (model: {model_name}, pretrained: {pretrained}) but not loaded.')
 
         # set image / mean metadata from pretrained_cfg if available, or use default
         model.visual.image_mean = pretrained_cfg.get('mean', None) or OPENAI_DATASET_MEAN
         model.visual.image_std = pretrained_cfg.get('std', None) or OPENAI_DATASET_STD
 
-        if jit:
-            model = torch.jit.script(model)
+    if output_dict and hasattr(model, "output_dict"):
+        model.output_dict = True
+
+    if jit:
+        model = torch.jit.script(model)
 
     return model
+
+
+def create_loss(args):
+    if args.distill:
+        return DistillClipLoss(
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=True,
+            rank=args.rank,
+            world_size=args.world_size,
+            use_horovod=args.horovod,
+        )
+    elif "coca" in args.model.lower():
+        return CoCaLoss(
+            caption_loss_weight=args.coca_caption_loss_weight,
+            clip_loss_weight=args.coca_contrastive_loss_weight,
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=True,
+            rank=args.rank,
+            world_size=args.world_size,
+            use_horovod=args.horovod,
+        )
+    return ClipLoss(
+        local_loss=args.local_loss,
+        gather_with_grad=args.gather_with_grad,
+        cache_labels=True,
+        rank=args.rank,
+        world_size=args.world_size,
+        use_horovod=args.horovod,
+    )
 
 
 def create_model_and_transforms(
@@ -198,11 +296,14 @@ def create_model_and_transforms(
         force_quick_gelu: bool = False,
         force_custom_text: bool = False,
         force_patch_dropout: Optional[float] = None,
+        force_image_size: Optional[Union[int, Tuple[int, int]]] = None,
         pretrained_image: bool = False,
         pretrained_hf: bool = True,
         image_mean: Optional[Tuple[float, ...]] = None,
         image_std: Optional[Tuple[float, ...]] = None,
+        aug_cfg: Optional[Union[Dict[str, Any], AugmentationCfg]] = None,
         cache_dir: Optional[str] = None,
+        output_dict: Optional[bool] = None,
 ):
     model = create_model(
         model_name,
@@ -213,9 +314,11 @@ def create_model_and_transforms(
         force_quick_gelu=force_quick_gelu,
         force_custom_text=force_custom_text,
         force_patch_dropout=force_patch_dropout,
+        force_image_size=force_image_size,
         pretrained_image=pretrained_image,
         pretrained_hf=pretrained_hf,
         cache_dir=cache_dir,
+        output_dict=output_dict,
     )
 
     image_mean = image_mean or getattr(model.visual, 'image_mean', None)
@@ -224,13 +327,14 @@ def create_model_and_transforms(
         model.visual.image_size,
         is_train=True,
         mean=image_mean,
-        std=image_std
+        std=image_std,
+        aug_cfg=aug_cfg,
     )
     preprocess_val = image_transform(
         model.visual.image_size,
         is_train=False,
         mean=image_mean,
-        std=image_std
+        std=image_std,
     )
 
     return model, preprocess_train, preprocess_val
@@ -238,22 +342,18 @@ def create_model_and_transforms(
 
 def create_model_from_pretrained(
         model_name: str,
-        pretrained: str,
+        pretrained: Optional[str] = None,
         precision: str = 'fp32',
         device: Union[str, torch.device] = 'cpu',
         jit: bool = False,
         force_quick_gelu: bool = False,
         force_custom_text: bool = False,
+        force_image_size: Optional[Union[int, Tuple[int, int]]] = None,
         return_transform: bool = True,
         image_mean: Optional[Tuple[float, ...]] = None,
         image_std: Optional[Tuple[float, ...]] = None,
         cache_dir: Optional[str] = None,
 ):
-    if not is_pretrained_cfg(model_name, pretrained) and not os.path.exists(pretrained):
-        raise RuntimeError(
-            f'{pretrained} is not a valid pretrained cfg or checkpoint for {model_name}.'
-            f' Use open_clip.list_pretrained() to find one.')
-
     model = create_model(
         model_name,
         pretrained,
@@ -262,7 +362,9 @@ def create_model_from_pretrained(
         jit=jit,
         force_quick_gelu=force_quick_gelu,
         force_custom_text=force_custom_text,
+        force_image_size=force_image_size,
         cache_dir=cache_dir,
+        require_pretrained=True,
     )
 
     if not return_transform:
@@ -274,7 +376,7 @@ def create_model_from_pretrained(
         model.visual.image_size,
         is_train=False,
         mean=image_mean,
-        std=image_std
+        std=image_std,
     )
 
     return model, preprocess

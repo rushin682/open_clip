@@ -1,3 +1,88 @@
+## 2.19.0
+
+* Add DataComp models
+
+## 2.18.0
+
+* Enable int8 inference without `.weight` attribute
+
+## 2.17.2
+
+* Update push_to_hf_hub
+
+## 2.17.0
+
+* Add int8 support
+* Update notebook demo
+* Refactor zero-shot classification code
+
+## 2.16.2
+
+* Fixes for context_length and vocab_size attributes 
+
+## 2.16.1
+
+* Fixes for context_length and vocab_size attributes 
+* Fix --train-num-samples logic
+* Add HF BERT configs for PubMed CLIP model
+
+## 2.16.0
+
+* Add improved g-14 weights
+* Update protobuf version
+
+## 2.15.0
+
+* Add convnext_xxlarge weights
+* Fixed import in readme
+* Add samples per second per gpu logging
+* Fix slurm example
+
+## 2.14.0
+
+* Move dataset mixtures logic to shard level
+* Fix CoCa accum-grad training
+* Safer transformers import guard
+* get_labels refactoring
+
+## 2.13.0
+
+* Add support for dataset mixtures with different sampling weights
+* Make transformers optional again 
+
+## 2.12.0
+
+* Updated convnext configs for consistency
+* Added input_patchnorm option
+* Clean and improve CoCa generation
+* Support model distillation
+* Add ConvNeXt-Large 320x320 fine-tune weights
+
+## 2.11.1
+
+* Make transformers optional
+* Add MSCOCO CoCa finetunes to pretrained models
+
+## 2.11.0
+
+* coca support and weights
+* ConvNeXt-Large weights
+
+## 2.10.1
+
+* `hf-hub:org/model_id` support for loading models w/ config and weights in Hugging Face Hub
+
+## 2.10.0
+
+* Added a ViT-bigG-14 model.
+* Added an up-to-date example slurm script for large training jobs.
+* Added a option to sync logs and checkpoints to S3 during training.
+* New options for LR schedulers, constant and constant with cooldown
+* Fix wandb autoresuming when resume is not set
+* ConvNeXt `base` & `base_w` pretrained models added
+* `timm-` model prefix removed from configs
+* `timm` augmentation + regularization (dropout / drop-path) supported
+
 ## 2.9.3
 
 * Fix wandb collapsing multiple parallel runs into a single one

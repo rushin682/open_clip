@@ -1,4 +1,5 @@
 import argparse
+import ast
 
 
 def get_default_params(model_name):
@@ -10,13 +11,35 @@ def get_default_params(model_name):
         return {"lr": 5.0e-4, "beta1": 0.9, "beta2": 0.999, "eps": 1.0e-8}
 
 
+class ParseKwargs(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        kw = {}
+        for value in values:
+            key, value = value.split('=')
+            try:
+                kw[key] = ast.literal_eval(value)
+            except ValueError:
+                kw[key] = str(value)  # fallback to string (avoid need to escape on command line)
+        setattr(namespace, self.dest, kw)
+
+
 def parse_args(args):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--train-data",
         type=str,
         default=None,
-        help="Path to file(s) with training data",
+        help="Path to file(s) with training data. When using webdataset, multiple datasources can be combined using the `::` separator.",
+    )
+    parser.add_argument(
+        "--train-data-upsampling-factors",
+        type=str,
+        default=None,
+        help=(
+            "When using multiple data sources with webdataset and sampling with replacement, this can be used to upsample specific data sources. "
+            "Similar to --train-data, this should be a string with as many numbers as there are data sources, separated by `::` (e.g. 1::2::0.5) "
+            "By default, datapoints are sampled uniformly regardless of the dataset sizes."
+        )
     )
     parser.add_argument(
         "--val-data",
@@ -165,7 +188,7 @@ def parse_args(args):
     )
     parser.add_argument(
         "--precision",
-        choices=["amp", "amp_bf16", "amp_bfloat16", "bf16", "fp16", "fp32"],
+        choices=["amp", "amp_bf16", "amp_bfloat16", "bf16", "fp16", "pure_bf16", "pure_fp16", "fp32"],
         default="amp",
         help="Floating point precision."
     )
@@ -211,6 +234,7 @@ def parse_args(args):
     parser.add_argument(
         '--image-std', type=float, nargs='+', default=None, metavar='STD',
         help='Override default image std deviation of of dataset')
+    parser.add_argument('--aug-cfg', nargs='*', default={}, action=ParseKwargs)
     parser.add_argument(
         "--grad-checkpointing",
         default=False,
@@ -228,6 +252,10 @@ def parse_args(args):
         default=False,
         action="store_true",
         help="enable full distributed gradient for feature gather"
+    )
+    parser.add_argument(
+        '--force-image-size', type=int, nargs='+', default=None,
+        help='Override default image size'
     )
     parser.add_argument(
         "--force-quick-gelu",
@@ -252,6 +280,12 @@ def parse_args(args):
         default=False,
         action='store_true',
         help="torch.jit.script the model, also uses jit version of OpenAI models if pretrained=='openai'",
+    )
+    parser.add_argument(
+        "--torchcompile",
+        default=False,
+        action='store_true',
+        help="torch.compile() the model, requires pytorch 2.0 or later.",
     )
     parser.add_argument(
         "--trace",
@@ -336,13 +370,13 @@ def parse_args(args):
         "--lock-text-unlocked-layers",
         type=int,
         default=0,
-        help="Leave last n image tower layer groups unlocked.",
+        help="Leave last n text tower layer groups unlocked.",
     )
     parser.add_argument(
         "--lock-text-freeze-layer-norm",
         default=False,
         action='store_true',
-        help="Freeze BatchNorm running stats in image tower for any locked layers.",
+        help="Freeze BatchNorm running stats in text tower for any locked layers.",
     )
     parser.add_argument(
         "--log-every-n-steps",
@@ -350,8 +384,58 @@ def parse_args(args):
         default=100,
         help="Log every n steps to tensorboard/console/wandb.",
     )
-
-
+    parser.add_argument(
+        "--coca-caption-loss-weight",
+        type=float,
+        default=2.0,
+        help="Weight assigned to caption loss in CoCa."
+    )
+    parser.add_argument(
+        "--coca-contrastive-loss-weight",
+        type=float,
+        default=1.0,
+        help="Weight assigned to contrastive loss when training CoCa."
+    )
+    parser.add_argument(
+        "--remote-sync",
+        type=str,
+        default=None,
+        help="Optinoally sync with a remote path specified by this arg",
+    )
+    parser.add_argument(
+        "--remote-sync-frequency",
+        type=int,
+        default=300,
+        help="How frequently to sync to a remote directly if --remote-sync is not None.",
+    )
+    parser.add_argument(
+        "--remote-sync-protocol",
+        choices=["s3", "fsspec"],
+        default="s3",
+        help="How to do the remote sync backup if --remote-sync is not None.",
+    )
+    parser.add_argument(
+        "--delete-previous-checkpoint",
+        default=False,
+        action="store_true",
+        help="If true, delete previous checkpoint after storing a new one."
+    )
+    parser.add_argument(
+        "--distill-model",
+        default=None,
+        help='Which model arch to distill from, if any.'
+    )
+    parser.add_argument(
+        "--distill-pretrained",
+        default=None,
+        help='Which pre-trained weights to distill from, if any.'
+    )
+    parser.add_argument(
+        "--use-bnb-linear",
+        default=None,
+        help='Replace the network linear layers from the bitsandbytes library. '
+        'Allows int8 training/inference, etc.'
+    )
     args = parser.parse_args(args)
 
     # If some params are not passed, we use the default values based on model name.
