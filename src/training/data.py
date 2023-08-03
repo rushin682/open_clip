@@ -17,8 +17,12 @@ import webdataset as wds
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableDataset, get_worker_info
 from torch.utils.data.distributed import DistributedSampler
+from torchvision import transforms
+
 from webdataset.filters import _shuffle
 from webdataset.tariterators import base_plus_ext, url_opener, tar_file_expander, valid_sample
+
+from h5_dataset import H5Dataset
 
 try:
     import horovod.torch as hvd
@@ -521,8 +525,42 @@ def get_synthetic_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None
 
     return DataInfo(dataloader, sampler)
 
+def get_h5_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
+    input_filename = args.train_data if is_train else args.val_data
+    assert input_filename
+
+    """
+    args.train_data/val_data = csv/txt file with sample names
+    args.dataset_type = 'h5' 
+    """
+
+    dataset = H5Dataset(
+        input_filename,
+        transforms=preprocess_fn,
+        tokenizer=tokenizer
+    )
+    num_samples = len(dataset)
+    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    shuffle = is_train and sampler is None
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        drop_last=is_train,
+    )
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader, sampler)
+
 
 def get_dataset_fn(data_path, dataset_type):
+    if dataset_type == "h5":
+        return get_h5_dataset
     if dataset_type == "webdataset":
         return get_wds_dataset
     elif dataset_type == "csv":
@@ -561,3 +599,33 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
         data["imagenet-v2"] = get_imagenet(args, preprocess_fns, "v2")
 
     return data
+
+if __name__ == "__main__":
+    # transforms is just convert PIL to tensor
+    transforms = transforms.Compose([transforms.ToTensor()])
+    # tokenizer is just a function that converts the gene-expression to a torch tensor without normalizing
+    tokenizer = lambda x: torch.tensor(x, dtype=torch.float32)
+
+    class Args():
+        pass
+    # set args as an object of Object class
+    args = Args()
+    args.val_data = 'HTAN-WUSTL.csv'
+    args.dataset_type = 'h5'
+    args.distributed = False
+    args.batch_size = 32
+    args.workers = 0
+    args.train_data, args.imagenet_val, args.imagenet_train, args.imagenet_v2 = None, None, None, None
+
+
+    preprocess_fns = (transforms, transforms)
+
+    data = get_data(args, preprocess_fns, epoch=0, tokenizer=tokenizer)
+
+    print(data)
+    print(len(data['val'].dataloader), len(data['val'].dataloader.dataset))
+    for i, batch in enumerate(data['val'].dataloader):
+        print(batch[0].shape, batch[1].shape)
+
+        if i>40:
+            break
