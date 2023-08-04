@@ -18,7 +18,7 @@ from .modified_resnet import ModifiedResNet
 from .timm_model import TimmModel
 from .transformer import LayerNormFp32, LayerNorm, QuickGELU, Attention, VisionTransformer, TextTransformer
 from .utils import to_2tuple
-
+from .custom_model import CustomImageModel, CustomTextModel
 
 @dataclass
 class CLIPVisionCfg:
@@ -37,6 +37,10 @@ class CLIPVisionCfg:
     n_queries: int = 256  # n_queries for attentional pooler
     attn_pooler_heads: int = 8  # n heads for attentional_pooling
     output_tokens: bool = False
+
+    custom_model_name: str = None  # a valid model name overrides layers, width, patch_sizes
+    custom_model_pretrained: bool = False  # use (custom) pretrained weights for named model
+    custom_proj: str = 'linear'  # linear projection for custom model output ('linear', 'mlp', 'identity', '')
 
     timm_model_name: str = None  # a valid model name overrides layers, width, patch_size
     timm_model_pretrained: bool = False  # use (imagenet) pretrained weights for named model
@@ -64,6 +68,9 @@ class CLIPTextCfg:
     pad_id: int = 0
     output_tokens: bool = False
 
+    custom_model_name: str = None  # a valid model name overrides layers, width, patch_sizes
+    custom_model_pretrained: bool = False  # use (custom) pretrained weights for named model
+    custom_proj: str = 'linear'  # linear projection for custom model output ('linear', 'mlp', 'identity', '')
 
 def get_cast_dtype(precision: str):
     cast_dtype = None
@@ -110,6 +117,16 @@ def _build_vision_tower(
             embed_dim=embed_dim,
             image_size=vision_cfg.image_size,
         )
+    elif vision_cfg.custom_model_name:
+        visual = CustomImageModel(
+            model_name=vision_cfg.custom_model_name,
+            pretrained=vision_cfg.custom_model_pretrained,
+            proj=vision_cfg.custom_proj,
+            image_size=vision_cfg.image_size
+        )
+        # assert that vision_cfg.embed_dim matches the output dim of the custom model
+        assert embed_dim == visual.trunk.embed_dim * 8
+
     elif isinstance(vision_cfg.layers, (tuple, list)):
         vision_heads = vision_cfg.width * 32 // vision_cfg.head_width
         visual = ModifiedResNet(
@@ -163,6 +180,14 @@ def _build_text_tower(
             pretrained=text_cfg.hf_model_pretrained,
             output_tokens=text_cfg.output_tokens,
         )
+    elif text_cfg.custom_model_name:
+        text = CustomTextModel(
+            model_name=text_cfg.custom_model_name,
+            pretrained=text_cfg.custom_model_pretrained,
+            proj=text_cfg.proj,
+            input_dim=text_cfg.vocab_size,
+            output_dim=text_cfg.context_length) # try to keep it similar to emb_dim
+            
     else:
         act_layer = QuickGELU if quick_gelu else nn.GELU
         norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm

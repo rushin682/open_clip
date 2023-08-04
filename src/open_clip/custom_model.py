@@ -9,10 +9,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from open_clip.utils import freeze_batch_norm_2d, _ntuple
+from .utils import freeze_batch_norm_2d, _ntuple
 
-from ctranspath_swin_first import ConvStem, swin_tiny_patch4_window7_224
-from snn import SNN,  snn_small_omic, snn_big_omic
+from .ctranspath_swin_first import ConvStem
+from .ctranspath_swin_first import swin_tiny_patch4_window7_224 as ctranspath_first
+from .ctranspath_swin import swin_tiny_patch4_window7_224 as ctranspath
+
+from .snn import SNN,  snn_small_omic, snn_big_omic
+# from .scbert import scBERT
+# from .scgpt import scGPT
 
 class CustomImageModel(nn.Module):
     """custom image model adapter
@@ -28,8 +33,11 @@ class CustomImageModel(nn.Module):
         super().__init__()
         self.image_size = _ntuple(2)(image_size)
 
-        if model_name == 'swin_tiny_patch4_window7_224':
-            self.trunk = swin_tiny_patch4_window7_224(embed_layer=ConvStem, pretrained=pretrained)
+        if model_name == 'ctranspath_first':
+            self.trunk = ctranspath_first(embed_layer=ConvStem, pretrained=pretrained)
+        
+        elif model_name == 'ctranspath':
+            self.trunk = ctranspath(embed_layer=ConvStem, pretrained=pretrained)
             
         if proj == 'identity':
             self.trunk.head = nn.Identity()
@@ -50,6 +58,9 @@ class CustomImageModel(nn.Module):
         """ lock modules
         Args:
             unlocked_groups (int): leave last n layer groups unlocked (default: 0)
+
+            for ctranspath_first: unlock all layers
+            for ctranspath: unlock last 2 layer groups or none
         """
         
         for param in self.trunk.parameters():
