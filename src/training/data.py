@@ -31,6 +31,9 @@ class CsvDataset(Dataset):
         logging.debug(f'Loading csv data from {input_filename}.')
         df = pd.read_csv(input_filename, sep=sep)
 
+        self.root = os.path.dirname(input_filename)
+        self.csv_file_name = os.path.basename(input_filename).split('.')[0]
+
         self.images = df[img_key].tolist()
         self.captions = df[caption_key].tolist()
         self.transforms = transforms
@@ -42,7 +45,7 @@ class CsvDataset(Dataset):
         return len(self.captions)
 
     def __getitem__(self, idx):
-        images = self.transforms(Image.open(str(self.images[idx])))
+        images = self.transforms(Image.open(os.path.join(self.root, self.csv_file_name, str(self.images[idx]))))
         texts = self.tokenize([str(self.captions[idx])])[0]
         return images, texts
 
