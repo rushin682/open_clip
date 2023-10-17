@@ -17,6 +17,8 @@ try:
 except ImportError:
     wandb = None
 
+os.environ['WANDB_DISABLED'] = 'true'
+
 try:
     import torch.utils.tensorboard as tensorboard
 except ImportError:

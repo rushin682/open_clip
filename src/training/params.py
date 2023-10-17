@@ -61,7 +61,7 @@ def parse_args(args):
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "synthetic", "auto"],
+        choices=["h5", "webdataset", "csv", "synthetic", "auto"],
         default="auto",
         help="Which type of dataset to process."
     )
@@ -275,6 +275,14 @@ def parse_args(args):
         action='store_true',
         help="Force use of CustomTextCLIP model (separate text-tower).",
     )
+
+    parser.add_argument(
+        "--force-custom-model",
+        default=False,
+        action='store_true',
+        help="Force use of CustomCLIP model (separate image-tower + text-tower).",
+    )
+
     parser.add_argument(
         "--torchscript",
         default=False,
