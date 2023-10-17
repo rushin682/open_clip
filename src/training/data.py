@@ -27,7 +27,7 @@ try:
 except ImportError:
     hvd = None
 
-from .h5_dataset import H5Dataset
+from training.h5_dataset import H5Dataset
 
 class CsvDataset(Dataset):
     def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t", tokenizer=None):
@@ -616,7 +616,7 @@ if __name__ == "__main__":
          pass
      # set args as an object of Object class
      args = Args()
-     args.val_data = 'HTAN-WUSTL.csv'
+     args.val_data = 'HTAN-WUSTL_train.csv'
      args.dataset_type = 'h5'
      args.distributed = False
      args.batch_size = 32
