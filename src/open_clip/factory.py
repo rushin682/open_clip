@@ -10,9 +10,10 @@ from typing import Any, Dict, Optional, Tuple, Union
 import torch
 
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
-from .model import CLIP, CustomTextCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict,\
-    resize_pos_embed, get_cast_dtype, resize_text_pos_embed, set_model_preprocess_cfg
+from .model import CLIP, CustomGeneCLIP, convert_weights_to_lp, convert_to_custom_gene_state_dict,\
+    resize_pos_embed, get_cast_dtype, resize_gene_pos_embed, set_model_preprocess_cfg
 from .coca_model import CoCa
+from .spatial_clip_model import SpatialCLIP
 from .loss import ClipLoss, DistillClipLoss, CoCaLoss, SigLipLoss
 from .openai import load_openai_model
 from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrained,\
@@ -45,7 +46,7 @@ def _rescan_model_configs():
     for cf in config_files:
         with open(cf, 'r') as f:
             model_cfg = json.load(f)
-            if all(a in model_cfg for a in ('embed_dim', 'vision_cfg', 'text_cfg')):
+            if all(a in model_cfg for a in ('embed_dim', 'vision_cfg', 'gene_cfg')):
                 _MODEL_CONFIGS[cf.stem] = model_cfg
 
     _MODEL_CONFIGS = {k: v for k, v in sorted(_MODEL_CONFIGS.items(), key=lambda x: _natural_key(x[0]))}
@@ -101,18 +102,18 @@ def get_tokenizer(
         config = get_model_config(model_name)
         assert config is not None, f"No valid model config found for {model_name}."
 
-    text_config = config.get('text_cfg', {})
-    if 'tokenizer_kwargs' in text_config:
-        tokenizer_kwargs = dict(text_config['tokenizer_kwargs'], **kwargs)
+    gene_config = config.get('gene_cfg', {})
+    if 'tokenizer_kwargs' in gene_config:
+        tokenizer_kwargs = dict(gene_config['tokenizer_kwargs'], **kwargs)
     else:
         tokenizer_kwargs = kwargs
 
     if context_length is None:
-        context_length = text_config.get('context_length', DEFAULT_CONTEXT_LENGTH)
+        context_length = gene_config.get('context_length', DEFAULT_CONTEXT_LENGTH)
 
-    if 'hf_tokenizer_name' in text_config:
+    if 'hf_tokenizer_name' in gene_config:
         tokenizer = HFTokenizer(
-            text_config['hf_tokenizer_name'],
+            gene_config['hf_tokenizer_name'],
             context_length=context_length,
             **tokenizer_kwargs,
         )
@@ -149,13 +150,13 @@ def load_checkpoint(model, checkpoint_path, strict=True):
     state_dict = load_state_dict(checkpoint_path)
     # detect old format and make compatible with new format
     if 'positional_embedding' in state_dict and not hasattr(model, 'positional_embedding'):
-        state_dict = convert_to_custom_text_state_dict(state_dict)
-    # Certain text transformers no longer expect position_ids after transformers==4.31
-    position_id_key = 'text.transformer.embeddings.position_ids'
+        state_dict = convert_to_custom_gene_state_dict(state_dict)
+    # Certain gene transformers no longer expect position_ids after transformers==4.31
+    position_id_key = 'gene.transformer.embeddings.position_ids'
     if position_id_key in state_dict and not hasattr(model, position_id_key):
         del state_dict[position_id_key]
     resize_pos_embed(state_dict, model)
-    resize_text_pos_embed(state_dict, model)
+    resize_gene_pos_embed(state_dict, model)
     incompatible_keys = model.load_state_dict(state_dict, strict=strict)
     return incompatible_keys
 
@@ -167,7 +168,8 @@ def create_model(
         device: Union[str, torch.device] = 'cpu',
         jit: bool = False,
         force_quick_gelu: bool = False,
-        force_custom_text: bool = False,
+        force_custom_gene: bool = False,
+        force_custom_clip: bool = False,
         force_patch_dropout: Optional[float] = None,
         force_image_size: Optional[Union[int, Tuple[int, int]]] = None,
         force_preprocess_cfg: Optional[Dict[str, Any]] = None,
@@ -187,7 +189,7 @@ def create_model(
         config = _get_hf_config(model_id, cache_dir)
         preprocess_cfg = merge_preprocess_dict(preprocess_cfg, config['preprocess_cfg'])
         model_cfg = config['model_cfg']
-        pretrained_hf = False  # override, no need to load original HF text weights
+        pretrained_hf = False  # override, no need to load original HF gene weights
     else:
         model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
         checkpoint_path = None
@@ -234,18 +236,26 @@ def create_model(
 
         # cast_dtype set for fp16 and bf16 (manual mixed-precision), not set for 'amp' or 'pure' modes
         cast_dtype = get_cast_dtype(precision)
-        is_hf_model = 'hf_model_name' in model_cfg.get('text_cfg', {})
+        is_hf_model = 'hf_model_name' in model_cfg.get('gene_cfg', {})
         if is_hf_model:
-            # load pretrained weights for HF text model IFF no CLIP weights being loaded
-            model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf and not pretrained
-        custom_text = model_cfg.pop('custom_text', False) or force_custom_text or is_hf_model
+            # load pretrained weights for HF gene model IFF no CLIP weights being loaded
+            model_cfg['gene_cfg']['hf_model_pretrained'] = pretrained_hf and not pretrained
+        custom_gene = model_cfg.pop('custom_gene', False) or force_custom_gene or is_hf_model
+        
+        # If you want a completely custom clip model with custom gene and custom image encoders (Ex. SpatialCLIP)
+        custom_clip = model_cfg.pop('custom_clip', False) or force_custom_clip
 
         model_cfg = dict(model_cfg, **model_kwargs)  # merge cfg dict w/ kwargs (kwargs overrides cfg)
-        if custom_text:
+        if custom_gene:
             if "multimodal_cfg" in model_cfg:
                 model = CoCa(**model_cfg, cast_dtype=cast_dtype)
             else:
-                model = CustomTextCLIP(**model_cfg, cast_dtype=cast_dtype)
+                model = CustomGeneCLIP(**model_cfg, cast_dtype=cast_dtype)
+
+        if custom_clip:
+            if "spatial_clip" in model_name:
+                model = SpatialCLIP(**model_cfg, cast_dtype=cast_dtype)
+
         else:
             model = CLIP(**model_cfg, cast_dtype=cast_dtype)
 
@@ -362,7 +372,7 @@ def create_model_and_transforms(
         device: Union[str, torch.device] = 'cpu',
         jit: bool = False,
         force_quick_gelu: bool = False,
-        force_custom_text: bool = False,
+        force_custom_gene: bool = False,
         force_patch_dropout: Optional[float] = None,
         force_image_size: Optional[Union[int, Tuple[int, int]]] = None,
         image_mean: Optional[Tuple[float, ...]] = None,
@@ -386,7 +396,7 @@ def create_model_and_transforms(
         device=device,
         jit=jit,
         force_quick_gelu=force_quick_gelu,
-        force_custom_text=force_custom_text,
+        force_custom_gene=force_custom_gene,
         force_patch_dropout=force_patch_dropout,
         force_image_size=force_image_size,
         force_preprocess_cfg=force_preprocess_cfg,
@@ -419,7 +429,7 @@ def create_model_from_pretrained(
         device: Union[str, torch.device] = 'cpu',
         jit: bool = False,
         force_quick_gelu: bool = False,
-        force_custom_text: bool = False,
+        force_custom_gene: bool = False,
         force_image_size: Optional[Union[int, Tuple[int, int]]] = None,
         image_mean: Optional[Tuple[float, ...]] = None,
         image_std: Optional[Tuple[float, ...]] = None,
@@ -439,7 +449,7 @@ def create_model_from_pretrained(
         device=device,
         jit=jit,
         force_quick_gelu=force_quick_gelu,
-        force_custom_text=force_custom_text,
+        force_custom_gene=force_custom_gene,
         force_image_size=force_image_size,
         force_preprocess_cfg=force_preprocess_cfg,
         cache_dir=cache_dir,

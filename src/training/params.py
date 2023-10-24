@@ -280,17 +280,17 @@ def parse_args(args):
         help="Override the patch dropout during training, for fine tuning with no dropout near the end as in the paper",
     )
     parser.add_argument(
-        "--force-custom-text",
+        "--force-custom-gene",
         default=False,
         action='store_true',
-        help="Force use of CustomTextCLIP model (separate text-tower).",
+        help="Force use of CustomGeneCLIP model (separate gene-tower).",
     )
 
     parser.add_argument(
         "--force-custom-model",
         default=False,
         action='store_true',
-        help="Force use of CustomCLIP model (separate image-tower + text-tower).",
+        help="Force use of CustomCLIP model (separate image-tower + gene-tower).",
     )
 
     parser.add_argument(
@@ -379,22 +379,22 @@ def parse_args(args):
         "--grad-clip-norm", type=float, default=None, help="Gradient clip."
     )
     parser.add_argument(
-        "--lock-text",
+        "--lock-gene",
         default=False,
         action='store_true',
-        help="Lock full text tower by disabling gradients.",
+        help="Lock full gene tower by disabling gradients.",
     )
     parser.add_argument(
-        "--lock-text-unlocked-layers",
+        "--lock-gene-unlocked-layers",
         type=int,
         default=0,
-        help="Leave last n text tower layer groups unlocked.",
+        help="Leave last n gene tower layer groups unlocked.",
     )
     parser.add_argument(
-        "--lock-text-freeze-layer-norm",
+        "--lock-gene-freeze-layer-norm",
         default=False,
         action='store_true',
-        help="Freeze BatchNorm running stats in text tower for any locked layers.",
+        help="Freeze BatchNorm running stats in gene tower for any locked layers.",
     )
     parser.add_argument(
         "--log-every-n-steps",

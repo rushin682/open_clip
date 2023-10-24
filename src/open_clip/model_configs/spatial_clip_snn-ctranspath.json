@@ -1,0 +1,17 @@
+{
+    "embed_dim": 768,
+    "vision_cfg": {
+        "custom_model_name": "ctranspath",
+        "custom_model_pretrained": true,
+        "custom_proj": "identity",
+        "image_size": 224
+    },
+    "gene_cfg": {
+        "context_length": 768,
+        "custom_model_name": "snn_small_omic",
+        "custom_model_pretrained": false,
+        "custom_proj": "identity",
+        "vocab_size": 36601 
+    },
+    "custom_clip": true
+}

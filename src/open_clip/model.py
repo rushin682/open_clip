@@ -15,11 +15,11 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 from functools import partial
 
-from .hf_model import HFTextEncoder
+from .hf_model import HFGeneEncoder
 from .modified_resnet import ModifiedResNet
 from .timm_model import TimmModel
-from .transformer import LayerNormFp32, LayerNorm, QuickGELU, Attention, VisionTransformer, TextTransformer,\
-    text_global_pool
+from .transformer import LayerNormFp32, LayerNorm, QuickGELU, Attention, VisionTransformer, GeneTransformer,\
+    gene_global_pool
 from .utils import to_2tuple
 
 
@@ -55,7 +55,7 @@ class CLIPVisionCfg:
 
 
 @dataclass
-class CLIPTextCfg:
+class CLIPGeneCfg:
     context_length: int = 77
     vocab_size: int = 49408
     hf_tokenizer_name: Optional[str] = None
@@ -76,7 +76,7 @@ class CLIPTextCfg:
     act_kwargs: dict = None
     norm_kwargs: dict = None
 
-    # HuggingFace specific text tower config
+    # HuggingFace specific gene tower config
     hf_model_name: Optional[str] = None
     hf_model_pretrained: bool = True
     hf_proj_type: str = 'mlp'
@@ -170,51 +170,51 @@ def _build_vision_tower(
     return visual
 
 
-def _build_text_tower(
+def _build_gene_tower(
         embed_dim: int,
-        text_cfg: CLIPTextCfg,
+        gene_cfg: CLIPGeneCfg,
         quick_gelu: bool = False,
         cast_dtype: Optional[torch.dtype] = None,
 ):
-    if isinstance(text_cfg, dict):
-        text_cfg = CLIPTextCfg(**text_cfg)
+    if isinstance(gene_cfg, dict):
+        gene_cfg = CLIPGeneCfg(**gene_cfg)
 
-    if text_cfg.hf_model_name:
-        text = HFTextEncoder(
-            text_cfg.hf_model_name,
+    if gene_cfg.hf_model_name:
+        gene = HFGeneEncoder(
+            gene_cfg.hf_model_name,
             output_dim=embed_dim,
-            proj_type=text_cfg.hf_proj_type,
-            pooler_type=text_cfg.hf_pooler_type,
-            pretrained=text_cfg.hf_model_pretrained,
-            output_tokens=text_cfg.output_tokens,
+            proj_type=gene_cfg.hf_proj_type,
+            pooler_type=gene_cfg.hf_pooler_type,
+            pretrained=gene_cfg.hf_model_pretrained,
+            output_tokens=gene_cfg.output_tokens,
         )
     else:
         act_layer = QuickGELU if quick_gelu else nn.GELU
         norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm
-        if text_cfg.norm_kwargs:
-            norm_layer = partial(norm_layer, **text_cfg.norm_kwargs)
-        if text_cfg.act_kwargs is not None:
-            act_layer = partial(act_layer, **text_cfg.act_kwargs)
+        if gene_cfg.norm_kwargs:
+            norm_layer = partial(norm_layer, **gene_cfg.norm_kwargs)
+        if gene_cfg.act_kwargs is not None:
+            act_layer = partial(act_layer, **gene_cfg.act_kwargs)
 
-        text = TextTransformer(
-            context_length=text_cfg.context_length,
-            vocab_size=text_cfg.vocab_size,
-            width=text_cfg.width,
-            heads=text_cfg.heads,
-            layers=text_cfg.layers,
-            mlp_ratio=text_cfg.mlp_ratio,
-            ls_init_value=text_cfg.ls_init_value,
+        gene = GeneTransformer(
+            context_length=gene_cfg.context_length,
+            vocab_size=gene_cfg.vocab_size,
+            width=gene_cfg.width,
+            heads=gene_cfg.heads,
+            layers=gene_cfg.layers,
+            mlp_ratio=gene_cfg.mlp_ratio,
+            ls_init_value=gene_cfg.ls_init_value,
             output_dim=embed_dim,
-            embed_cls=text_cfg.embed_cls,
-            no_causal_mask=text_cfg.no_causal_mask,
-            pad_id=text_cfg.pad_id,
-            pool_type=text_cfg.pool_type,
-            proj_bias=text_cfg.proj_bias,
-            output_tokens=text_cfg.output_tokens,
+            embed_cls=gene_cfg.embed_cls,
+            no_causal_mask=gene_cfg.no_causal_mask,
+            pad_id=gene_cfg.pad_id,
+            pool_type=gene_cfg.pool_type,
+            proj_bias=gene_cfg.proj_bias,
+            output_tokens=gene_cfg.output_tokens,
             act_layer=act_layer,
             norm_layer=norm_layer,
         )
-    return text
+    return gene
 
 
 class CLIP(nn.Module):
@@ -224,7 +224,7 @@ class CLIP(nn.Module):
             self,
             embed_dim: int,
             vision_cfg: CLIPVisionCfg,
-            text_cfg: CLIPTextCfg,
+            gene_cfg: CLIPGeneCfg,
             quick_gelu: bool = False,
             init_logit_scale: float = np.log(1 / 0.07),
             init_logit_bias: Optional[float] = None,
@@ -236,16 +236,16 @@ class CLIP(nn.Module):
 
         self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
 
-        text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
-        self.transformer = text.transformer
-        self.context_length = text.context_length
-        self.vocab_size = text.vocab_size
-        self.token_embedding = text.token_embedding
-        self.positional_embedding = text.positional_embedding
-        self.ln_final = text.ln_final
-        self.text_projection = text.text_projection
-        self.text_pool_type = text.pool_type
-        self.register_buffer('attn_mask', text.attn_mask, persistent=False)
+        gene = _build_gene_tower(embed_dim, gene_cfg, quick_gelu, cast_dtype)
+        self.transformer = gene.transformer
+        self.context_length = gene.context_length
+        self.vocab_size = gene.vocab_size
+        self.token_embedding = gene.token_embedding
+        self.positional_embedding = gene.positional_embedding
+        self.ln_final = gene.ln_final
+        self.gene_projection = gene.gene_projection
+        self.gene_pool_type = gene.pool_type
+        self.register_buffer('attn_mask', gene.attn_mask, persistent=False)
 
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         if init_logit_bias is not None:
@@ -266,37 +266,37 @@ class CLIP(nn.Module):
         features = self.visual(image)
         return F.normalize(features, dim=-1) if normalize else features
 
-    def encode_text(self, text, normalize: bool = False):
+    def encode_gene(self, gene, normalize: bool = False):
         cast_dtype = self.transformer.get_cast_dtype()
 
-        x = self.token_embedding(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+        x = self.token_embedding(gene).to(cast_dtype)  # [batch_size, n_ctx, d_model]
 
         x = x + self.positional_embedding.to(cast_dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x, attn_mask=self.attn_mask)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final(x)  # [batch_size, n_ctx, transformer.width]
-        x, _ = text_global_pool(x, text, self.text_pool_type)
-        if self.text_projection is not None:
-            if isinstance(self.text_projection, nn.Linear):
-                x = self.text_projection(x)
+        x, _ = gene_global_pool(x, gene, self.gene_pool_type)
+        if self.gene_projection is not None:
+            if isinstance(self.gene_projection, nn.Linear):
+                x = self.gene_projection(x)
             else:
-                x = x @ self.text_projection
+                x = x @ self.gene_projection
 
         return F.normalize(x, dim=-1) if normalize else x
 
     def forward(
             self,
             image: Optional[torch.Tensor] = None,
-            text: Optional[torch.Tensor] = None,
+            gene: Optional[torch.Tensor] = None,
     ):
         image_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
+        gene_features = self.encode_gene(gene, normalize=True) if gene is not None else None
 
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
-                "text_features": text_features,
+                "gene_features": gene_features,
                 "logit_scale": self.logit_scale.exp()
             }
             if self.logit_bias is not None:
@@ -304,18 +304,18 @@ class CLIP(nn.Module):
             return out_dict
 
         if self.logit_bias is not None:
-            return image_features, text_features, self.logit_scale.exp(), self.logit_bias
-        return image_features, text_features, self.logit_scale.exp()
+            return image_features, gene_features, self.logit_scale.exp(), self.logit_bias
+        return image_features, gene_features, self.logit_scale.exp()
 
 
-class CustomTextCLIP(nn.Module):
+class CustomGeneCLIP(nn.Module):
     output_dict: torch.jit.Final[bool]
 
     def __init__(
             self,
             embed_dim: int,
             vision_cfg: CLIPVisionCfg,
-            text_cfg: CLIPTextCfg,
+            gene_cfg: CLIPGeneCfg,
             quick_gelu: bool = False,
             init_logit_scale: float = np.log(1 / 0.07),
             init_logit_bias: Optional[float] = None,
@@ -325,9 +325,9 @@ class CustomTextCLIP(nn.Module):
         super().__init__()
         self.output_dict = output_dict
         self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
-        self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
-        self.context_length = self.text.context_length
-        self.vocab_size = self.text.vocab_size
+        self.gene = _build_gene_tower(embed_dim, gene_cfg, quick_gelu, cast_dtype)
+        self.context_length = self.gene.context_length
+        self.vocab_size = self.gene.vocab_size
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         if init_logit_bias is not None:
             self.logit_bias = nn.Parameter(torch.ones([]) * init_logit_bias)
@@ -338,34 +338,34 @@ class CustomTextCLIP(nn.Module):
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
         self.visual.lock(unlocked_groups=unlocked_groups, freeze_bn_stats=freeze_bn_stats)
 
-    def lock_text_tower(self, unlocked_layers: int = 0, freeze_layer_norm: bool = True):
-        self.text.lock(unlocked_layers, freeze_layer_norm)
+    def lock_gene_tower(self, unlocked_layers: int = 0, freeze_layer_norm: bool = True):
+        self.gene.lock(unlocked_layers, freeze_layer_norm)
 
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
         self.visual.set_grad_checkpointing(enable)
-        self.text.set_grad_checkpointing(enable)
+        self.gene.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
         features = self.visual(image)
         return F.normalize(features, dim=-1) if normalize else features
 
-    def encode_text(self, text, normalize: bool = False):
-        features = self.text(text)
+    def encode_gene(self, gene, normalize: bool = False):
+        features = self.gene(gene)
         return F.normalize(features, dim=-1) if normalize else features
 
     def forward(
             self,
             image: Optional[torch.Tensor] = None,
-            text: Optional[torch.Tensor] = None,
+            gene: Optional[torch.Tensor] = None,
     ):
         image_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
+        gene_features = self.encode_gene(gene, normalize=True) if gene is not None else None
 
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
-                "text_features": text_features,
+                "gene_features": gene_features,
                 "logit_scale": self.logit_scale.exp()
             }
             if self.logit_bias is not None:
@@ -373,8 +373,8 @@ class CustomTextCLIP(nn.Module):
             return out_dict
 
         if self.logit_bias is not None:
-            return image_features, text_features, self.logit_scale.exp(), self.logit_bias
-        return image_features, text_features, self.logit_scale.exp()
+            return image_features, gene_features, self.logit_scale.exp(), self.logit_bias
+        return image_features, gene_features, self.logit_scale.exp()
 
 
 def convert_weights_to_lp(model: nn.Module, dtype=torch.float16):
@@ -392,9 +392,9 @@ def convert_weights_to_lp(model: nn.Module, dtype=torch.float16):
                 if tensor is not None:
                     tensor.data = tensor.data.to(dtype)
 
-        if isinstance(l, (CLIP, TextTransformer)):
-            # convert text nn.Parameter projections
-            attr = getattr(l, "text_projection", None)
+        if isinstance(l, (CLIP, GeneTransformer)):
+            # convert gene nn.Parameter projections
+            attr = getattr(l, "gene_projection", None)
             if attr is not None:
                 attr.data = attr.data.to(dtype)
 
@@ -411,19 +411,19 @@ convert_weights_to_fp16 = convert_weights_to_lp  # backwards compat
 
 
 # used to maintain checkpoint compatibility
-def convert_to_custom_text_state_dict(state_dict: dict):
-    if 'text_projection' in state_dict:
-        # old format state_dict, move text tower -> .text
+def convert_to_custom_gene_state_dict(state_dict: dict):
+    if 'gene_projection' in state_dict:
+        # old format state_dict, move gene tower -> .gene
         new_state_dict = {}
         for k, v in state_dict.items():
             if any(k.startswith(p) for p in (
-                'text_projection',
+                'gene_projection',
                 'positional_embedding',
                 'token_embedding',
                 'transformer',
                 'ln_final',
             )):
-                k = 'text.' + k
+                k = 'gene.' + k
             new_state_dict[k] = v
         return new_state_dict
     return state_dict
@@ -492,12 +492,12 @@ def trace_model(model, batch_size=256, device=torch.device('cpu')):
     model.eval()
     image_size = model.visual.image_size
     example_images = torch.ones((batch_size, 3, image_size, image_size), device=device)
-    example_text = torch.zeros((batch_size, model.context_length), dtype=torch.int, device=device)
+    example_gene = torch.zeros((batch_size, model.context_length), dtype=torch.int, device=device)
     model = torch.jit.trace_module(
         model,
         inputs=dict(
-            forward=(example_images, example_text),
-            encode_text=(example_text,),
+            forward=(example_images, example_gene),
+            encode_gene=(example_gene,),
             encode_image=(example_images,)
         ))
     model.visual.image_size = image_size
@@ -538,24 +538,24 @@ def resize_pos_embed(state_dict, model, interpolation: str = 'bicubic', antialia
     state_dict['visual.positional_embedding'] = new_pos_embed
 
 
-def resize_text_pos_embed(state_dict, model, interpolation: str = 'linear', antialias: bool = False):
+def resize_gene_pos_embed(state_dict, model, interpolation: str = 'linear', antialias: bool = False):
     old_pos_embed = state_dict.get('positional_embedding', None)
     if old_pos_embed is None:
         return
-    # FIXME add support for text cls_token
+    # FIXME add support for gene cls_token
     model_pos_embed = getattr(model, 'positional_embedding', None)
     if model_pos_embed is None:
-        model_pos_embed = getattr(model.text, 'positional_embedding', None)
+        model_pos_embed = getattr(model.gene, 'positional_embedding', None)
 
     old_num_pos = old_pos_embed.shape[0]
     old_width = old_pos_embed.shape[1]
     num_pos = model_pos_embed.shape[0]
     width = model_pos_embed.shape[1]
-    assert old_width == width, 'text pos_embed width changed!'
+    assert old_width == width, 'gene pos_embed width changed!'
     if old_num_pos == num_pos:
         return
 
-    logging.info('Resizing text position embedding num_pos from %s to %s', old_num_pos, num_pos)
+    logging.info('Resizing gene position embedding num_pos from %s to %s', old_num_pos, num_pos)
     old_pos_embed = old_pos_embed.reshape(1, old_num_pos, old_width).permute(0, 2, 1)
     old_pos_embed = F.interpolate(
         old_pos_embed,
@@ -595,7 +595,7 @@ def set_model_preprocess_cfg(model, preprocess_cfg: Dict[str, Any]):
 
 
 def get_model_tokenize_cfg(model):
-    module = getattr(model, 'text', model)
+    module = getattr(model, 'gene', model)
     cfg = {}
     context_length = getattr(module, 'context_length', None)
     if context_length is not None:

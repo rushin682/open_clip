@@ -229,7 +229,7 @@ def main(args):
         device=device,
         jit=args.torchscript,
         force_quick_gelu=args.force_quick_gelu,
-        force_custom_text=args.force_custom_text,
+        force_custom_gene=args.force_custom_gene,
         force_patch_dropout=args.force_patch_dropout,
         force_image_size=args.force_image_size,
         image_mean=args.image_mean,
@@ -272,10 +272,10 @@ def main(args):
         model.lock_image_tower(
             unlocked_groups=args.lock_image_unlocked_groups,
             freeze_bn_stats=args.lock_image_freeze_bn_stats)
-    if args.lock_text:
-        model.lock_text_tower(
-            unlocked_layers=args.lock_text_unlocked_layers,
-            freeze_layer_norm=args.lock_text_freeze_layer_norm)
+    if args.lock_gene:
+        model.lock_gene_tower(
+            unlocked_layers=args.lock_gene_unlocked_layers,
+            freeze_layer_norm=args.lock_gene_freeze_layer_norm)
 
     if args.grad_checkpointing:
         model.set_grad_checkpointing()
@@ -355,7 +355,9 @@ def main(args):
             logging.info(f"=> loaded checkpoint '{args.resume}' (epoch {start_epoch})")
 
     # initialize datasets
-    tokenizer = get_tokenizer(args.model)
+    # tokenizer = get_tokenizer(args.model)
+    tokenizer = None # TBD Rushin: Add GeneTokenizer for the gene model
+
     data = get_data(
         args,
         (preprocess_train, preprocess_val),

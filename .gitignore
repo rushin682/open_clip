@@ -4,6 +4,7 @@ models/
 features/
 results/
 checkpoints/
+datasets
 
 tests/data/
 *.pt

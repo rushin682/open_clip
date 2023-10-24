@@ -14,7 +14,7 @@ try:
 except ImportError:
     wandb = None
 
-from open_clip import get_input_dtype, CLIP, CustomTextCLIP
+from open_clip import get_input_dtype, CLIP, CustomGeneCLIP
 from .distributed import is_master
 from .zero_shot import zero_shot_eval
 from .precision import get_autocast
@@ -42,7 +42,7 @@ class AverageMeter(object):
 def postprocess_clip_output(model_out):
     return {
         "image_features": model_out[0],
-        "text_features": model_out[1],
+        "gene_features": model_out[1],
         "logit_scale": model_out[2]
     }
 
@@ -76,7 +76,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
     sample_digits = math.ceil(math.log(dataloader.num_samples + 1, 10))
 
     if args.accum_freq > 1:
-        accum_images, accum_texts, accum_features = [], [], {}
+        accum_images, accum_genes, accum_features = [], [], {}
 
     losses_m = {}
     batch_time_m = AverageMeter()
@@ -89,20 +89,20 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
         if not args.skip_scheduler:
             scheduler(step)
 
-        images, texts = batch
+        images, genes = batch
         images = images.to(device=device, dtype=input_dtype, non_blocking=True)
-        texts = texts.to(device=device, non_blocking=True)
+        genes = genes.to(device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
         if args.accum_freq == 1:
             with autocast():
-                model_out = model(images, texts)
+                model_out = model(images, genes)
                 logit_scale = model_out["logit_scale"]
                 if args.distill:
                     with torch.no_grad():
-                        dist_model_out = dist_model(images, texts)
+                        dist_model_out = dist_model(images, genes)
                     model_out.update({f'dist_{k}': v for k, v in dist_model_out.items()})
                 losses = loss(**model_out, output_dict=True)
 
@@ -114,7 +114,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
             # First, cache the features without any gradient tracking.
             with torch.no_grad():
                 with autocast():
-                    model_out = model(images, texts)
+                    model_out = model(images, genes)
 
                     for f in ("logit_scale", "logit_bias"):
                         model_out.pop(f, None)
@@ -126,7 +126,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
                             accum_features[key] = [val]
 
                 accum_images.append(images)
-                accum_texts.append(texts)
+                accum_genes.append(genes)
 
             # If (i + 1) % accum_freq is not zero, move on to the next batch.
             if ((i + 1) % args.accum_freq) > 0:
@@ -139,9 +139,9 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
             optimizer.zero_grad()
             for j in range(args.accum_freq):
                 images = accum_images[j]
-                texts = accum_texts[j]
+                genes = accum_genes[j]
                 with autocast():
-                    model_out = model(images, texts)
+                    model_out = model(images, genes)
 
                     inputs_no_accum = {}
                     inputs_no_accum["logit_scale"] = logit_scale = model_out.pop("logit_scale")
@@ -182,7 +182,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
 
         # reset gradient accum, if enabled
         if args.accum_freq > 1:
-            accum_images, accum_texts, accum_features = [], [], {}
+            accum_images, accum_genes, accum_features = [], [], {}
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
         with torch.no_grad():
@@ -267,34 +267,34 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
         samples_per_val = dataloader.num_samples
 
         # FIXME this does not scale past small eval datasets
-        # all_image_features @ all_text_features will blow up memory and compute very quickly
+        # all_image_features @ all_gene_features will blow up memory and compute very quickly
         cumulative_loss = 0.0
         cumulative_gen_loss = 0.0
-        all_image_features, all_text_features = [], []
+        all_image_features, all_gene_features = [], []
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
-                images, texts = batch
+                images, genes = batch
                 images = images.to(device=device, dtype=input_dtype, non_blocking=True)
-                texts = texts.to(device=device, non_blocking=True)
+                genes = genes.to(device=device, non_blocking=True)
 
                 with autocast():
-                    model_out = model(images, texts)
+                    model_out = model(images, genes)
                     image_features = model_out["image_features"]
-                    text_features = model_out["text_features"]
+                    gene_features = model_out["gene_features"]
                     logit_scale = model_out["logit_scale"]
                     # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly
                     # however, system RAM is easily exceeded and compute time becomes problematic
                     all_image_features.append(image_features.cpu())
-                    all_text_features.append(text_features.cpu())
+                    all_gene_features.append(gene_features.cpu())
                     logit_scale = logit_scale.mean()
-                    logits_per_image = logit_scale * image_features @ text_features.t()
-                    logits_per_text = logits_per_image.t()
+                    logits_per_image = logit_scale * image_features @ gene_features.t()
+                    logits_per_gene = logits_per_image.t()
 
                     batch_size = images.shape[0]
                     labels = torch.arange(batch_size, device=device).long()
                     total_loss = (
                         F.cross_entropy(logits_per_image, labels) +
-                        F.cross_entropy(logits_per_text, labels)
+                        F.cross_entropy(logits_per_gene, labels)
                     ) / 2
 
                     gen_loss = maybe_compute_generative_loss(model_out)
@@ -313,7 +313,7 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
 
             val_metrics = get_clip_metrics(
                 image_features=torch.cat(all_image_features),
-                text_features=torch.cat(all_text_features),
+                gene_features=torch.cat(all_gene_features),
                 logit_scale=logit_scale.cpu(),
             )
             loss = cumulative_loss / num_samples
@@ -357,13 +357,13 @@ def evaluate(model, data, epoch, args, tb_writer=None, tokenizer=None):
     return metrics
 
 
-def get_clip_metrics(image_features, text_features, logit_scale):
+def get_clip_metrics(image_features, gene_features, logit_scale):
     metrics = {}
-    logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
-    logits_per_text = logits_per_image.t().detach().cpu()
+    logits_per_image = (logit_scale * image_features @ gene_features.t()).detach().cpu()
+    logits_per_gene = logits_per_image.t().detach().cpu()
 
-    logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
-    ground_truth = torch.arange(len(text_features)).view(-1, 1)
+    logits = {"image_to_gene": logits_per_image, "gene_to_image": logits_per_gene}
+    ground_truth = torch.arange(len(gene_features)).view(-1, 1)
 
     for name, logit in logits.items():
         ranking = torch.argsort(logit, descending=True)

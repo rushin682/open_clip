@@ -1,6 +1,6 @@
 """ huggingface model adapter
 
-Wraps HuggingFace transformers (https://github.com/huggingface/transformers) models for use as a text tower in CLIP model.
+Wraps HuggingFace transformers (https://github.com/huggingface/transformers) models for use as a Gene tower in CLIP model.
 """
 import re
 
@@ -93,8 +93,9 @@ class ClsLastHiddenStatePooler(nn.Module):
         return x.last_hidden_state[:, self.cls_token_position, :]
 
 
-class HFTextEncoder(nn.Module):
+class HFGeneEncoder(nn.Module):
     """HuggingFace model adapter"""
+    # TBD: Rushin change a lot for GeneFormer and other Gene based Transformers
     output_tokens: torch.jit.Final[bool]
 
     def __init__(

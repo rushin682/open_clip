@@ -481,8 +481,8 @@ class VisionTransformer(nn.Module):
         #     nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
         #     nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
         #
-        # if self.text_projection is not None:
-        #     nn.init.normal_(self.text_projection, std=self.scale)
+        # if self.gene_projection is not None:
+        #     nn.init.normal_(self.gene_projection, std=self.scale)
         pass
 
     @torch.jit.ignore
@@ -547,22 +547,22 @@ class VisionTransformer(nn.Module):
         return pooled
 
 
-def text_global_pool(x, text: Optional[torch.Tensor] = None, pool_type: str = 'argmax'):
+def gene_global_pool(x, gene: Optional[torch.Tensor] = None, pool_type: str = 'argmax'):
     if pool_type == 'first':
         pooled, tokens = x[:, 0], x[:, 1:]
     elif pool_type == 'last':
         pooled, tokens = x[:, -1], x[:, :-1]
     elif pool_type == 'argmax':
         # take features from the eot embedding (eot_token is the highest number in each sequence)
-        assert text is not None
-        pooled, tokens = x[torch.arange(x.shape[0]), text.argmax(dim=-1)], x
+        assert gene is not None
+        pooled, tokens = x[torch.arange(x.shape[0]), gene.argmax(dim=-1)], x
     else:
         pooled = tokens = x
 
     return pooled, tokens
 
 
-class TextTransformer(nn.Module):
+class GeneTransformer(nn.Module):
     output_tokens: torch.jit.Final[bool]
 
     def __init__(
@@ -619,9 +619,9 @@ class TextTransformer(nn.Module):
             self.register_buffer('attn_mask', self.build_causal_mask(), persistent=False)
 
         if proj_bias:
-            self.text_projection = nn.Linear(width, output_dim)
+            self.gene_projection = nn.Linear(width, output_dim)
         else:
-            self.text_projection = nn.Parameter(torch.empty(width, output_dim))
+            self.gene_projection = nn.Parameter(torch.empty(width, output_dim))
 
         self.init_parameters()
 
@@ -640,13 +640,13 @@ class TextTransformer(nn.Module):
             nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
             nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
 
-        if self.text_projection is not None:
-            if isinstance(self.text_projection, nn.Linear):
-                nn.init.normal_(self.text_projection.weight, std=self.transformer.width ** -0.5)
-                if self.text_projection.bias is not None:
-                    nn.init.zeros_(self.text_projection.bias)
+        if self.gene_projection is not None:
+            if isinstance(self.gene_projection, nn.Linear):
+                nn.init.normal_(self.gene_projection.weight, std=self.transformer.width ** -0.5)
+                if self.gene_projection.bias is not None:
+                    nn.init.zeros_(self.gene_projection.bias)
             else:
-                nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
+                nn.init.normal_(self.gene_projection, std=self.transformer.width ** -0.5)
 
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
@@ -660,8 +660,8 @@ class TextTransformer(nn.Module):
         mask.triu_(1)  # zero out the lower diagonal
         return mask
 
-    def build_cls_mask(self, text, cast_dtype: torch.dtype):
-        cls_mask = (text != self.pad_id).unsqueeze(1)
+    def build_cls_mask(self, gene, cast_dtype: torch.dtype):
+        cls_mask = (gene != self.pad_id).unsqueeze(1)
         cls_mask = F.pad(cls_mask, (1, 0, cls_mask.shape[2], 0), value=True)
         additive_mask = torch.empty(cls_mask.shape, dtype=cast_dtype, device=cls_mask.device)
         additive_mask.fill_(0)
@@ -669,16 +669,16 @@ class TextTransformer(nn.Module):
         additive_mask = torch.repeat_interleave(additive_mask, self.heads, 0)
         return additive_mask
 
-    def forward(self, text):
+    def forward(self, gene):
         cast_dtype = self.transformer.get_cast_dtype()
-        seq_len = text.shape[1]
+        seq_len = gene.shape[1]
 
-        x = self.token_embedding(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+        x = self.token_embedding(gene).to(cast_dtype)  # [batch_size, n_ctx, d_model]
         attn_mask = self.attn_mask
         if self.cls_emb is not None:
             seq_len += 1
             x = torch.cat([x, _expand_token(self.cls_emb, x.shape[0])], dim=1)
-            cls_mask = self.build_cls_mask(text, cast_dtype)
+            cls_mask = self.build_cls_mask(gene, cast_dtype)
             if attn_mask is not None:
                 attn_mask = attn_mask[None, :seq_len, :seq_len] + cls_mask[:, :seq_len, :seq_len]
 
@@ -690,17 +690,17 @@ class TextTransformer(nn.Module):
         # x.shape = [batch_size, n_ctx, transformer.width]
         if self.cls_emb is not None:
             # presence of appended cls embed (CoCa) overrides pool_type, always take last token
-            pooled, tokens = text_global_pool(x, pool_type='last')
+            pooled, tokens = gene_global_pool(x, pool_type='last')
             pooled = self.ln_final(pooled)  # final LN applied after pooling in this case
         else:
             x = self.ln_final(x)
-            pooled, tokens = text_global_pool(x, text, pool_type=self.pool_type)
+            pooled, tokens = gene_global_pool(x, gene, pool_type=self.pool_type)
 
-        if self.text_projection is not None:
-            if isinstance(self.text_projection, nn.Linear):
-                pooled = self.text_projection(pooled)
+        if self.gene_projection is not None:
+            if isinstance(self.gene_projection, nn.Linear):
+                pooled = self.gene_projection(pooled)
             else:
-                pooled = pooled @ self.text_projection
+                pooled = pooled @ self.gene_projection
 
         if self.output_tokens:
             return pooled, tokens
