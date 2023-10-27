@@ -18,9 +18,13 @@ from functools import partial
 from .hf_model import HFGeneEncoder
 from .modified_resnet import ModifiedResNet
 from .timm_model import TimmModel
-from .transformer import LayerNormFp32, LayerNorm, QuickGELU, Attention, VisionTransformer, GeneTransformer,\
+from .transformer import LayerNormFp32, LayerNorm, Attention, VisionTransformer, GeneTransformer,\
     gene_global_pool
 from .utils import to_2tuple
+
+from .ctranspath import swin_tiny_patch4_window7_224 as ctranspath
+from .ctranspath import ConvStem
+from .snn import SNN, snn_small_omic, snn_big_omic
 
 
 @dataclass
@@ -53,8 +57,14 @@ class CLIPVisionCfg:
     timm_drop: float = 0.  # head dropout
     timm_drop_path: Optional[float] = None  # backbone stochastic depth
 
+    custom_model_name: str = None
+    custom_model_pretrained: bool = False  # use (custom) pretrained weights for named custom model
+    custom_proj: str = 'linear'  # linear projection for custom model output ('linear', 'mlp', 'identity')
+
 
 @dataclass
+
+# TBD Rushin: Massive changes for Gene specific configurations
 class CLIPGeneCfg:
     context_length: int = 77
     vocab_size: int = 49408
@@ -82,6 +92,9 @@ class CLIPGeneCfg:
     hf_proj_type: str = 'mlp'
     hf_pooler_type: str = 'mean_pooler'  # attentional pooling for HF models
 
+    custom_model_name: str = None 
+    custom_model_pretrained: bool = False  # use (custom) pretrained weights for named custom model
+    custom_proj: str = 'linear'  # linear projection for custom model output ('linear', 'mlp', 'identity') 
 
 def get_cast_dtype(precision: str):
     cast_dtype = None
@@ -104,18 +117,32 @@ def get_input_dtype(precision: str):
 def _build_vision_tower(
         embed_dim: int,
         vision_cfg: CLIPVisionCfg,
-        quick_gelu: bool = False,
         cast_dtype: Optional[torch.dtype] = None
 ):
     if isinstance(vision_cfg, dict):
         vision_cfg = CLIPVisionCfg(**vision_cfg)
 
-    # OpenAI models are pretrained w/ QuickGELU but native nn.GELU is both faster and more
-    # memory efficient in recent PyTorch releases (>= 1.10).
-    # NOTE: timm models always use native GELU regardless of quick_gelu flag.
-    act_layer = QuickGELU if quick_gelu else nn.GELU
+    act_layer =  nn.GELU
 
-    if vision_cfg.timm_model_name:
+    # custom model initialization + pretrained weights
+    if vision_cfg.custom_model_name == "ctranspath":
+        visual = ctranspath(embed_layer=ConvStem)
+        if vision_cfg.custom_proj == "identity":
+            visual.head = nn.Identity()
+
+        if vision_cfg.custom_model_pretrained:
+            td = torch.load(f'checkpoints/{vision_cfg.custom_model_name}.pth')
+            # check all instances between td and self.trunk and load state dicts for only those that match
+            for k, v in td['model'].items():
+                if k in visual.state_dict():
+                    visual.state_dict()[k].copy_(v)
+                else:
+                    raise KeyError(f"Unrecognized key in pretrained weights: {k}")
+            
+            print(f"Loaded pretrained weights for {vision_cfg.custom_model_name}")
+
+    # timm model initialization + pretrained weights
+    elif vision_cfg.timm_model_name:
         visual = TimmModel(
             vision_cfg.timm_model_name,
             pretrained=vision_cfg.timm_model_pretrained,
@@ -128,6 +155,8 @@ def _build_vision_tower(
             embed_dim=embed_dim,
             image_size=vision_cfg.image_size,
         )
+
+    # resnet model initialization only
     elif isinstance(vision_cfg.layers, (tuple, list)):
         vision_heads = vision_cfg.width * 32 // vision_cfg.head_width
         visual = ModifiedResNet(
@@ -137,6 +166,8 @@ def _build_vision_tower(
             image_size=vision_cfg.image_size,
             width=vision_cfg.width,
         )
+        
+    # transformer model initialization only
     else:
         vision_heads = vision_cfg.width // vision_cfg.head_width
         norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm
@@ -173,13 +204,39 @@ def _build_vision_tower(
 def _build_gene_tower(
         embed_dim: int,
         gene_cfg: CLIPGeneCfg,
-        quick_gelu: bool = False,
         cast_dtype: Optional[torch.dtype] = None,
 ):
     if isinstance(gene_cfg, dict):
         gene_cfg = CLIPGeneCfg(**gene_cfg)
 
-    if gene_cfg.hf_model_name:
+    # custom model initialization + pretrained weights
+    # scGPT + pretrained weights, SNN + scratch, scBERT + pretrained weights 
+    if gene_cfg.custom_model_name:
+        if gene_cfg.custom_model_name == "snn_small_omic":
+            gene = snn_small_omic(input_dim=gene_cfg.vocab_size, output_dim=embed_dim)
+        elif gene_cfg.custom_model_name == "snn_big_omic":
+            gene = snn_big_omic(input_dim= gene_cfg.vocab_size, output_dim=embed_dim)
+
+        if gene_cfg.custom_proj == "identity":
+            gene.head = nn.Identity()
+
+        # TBD Rushin: Pretrained loading will be different for each custom model
+        if gene_cfg.custom_model_pretrained:
+            td = torch.load(f'checkpoints/{gene_cfg.custom_model_name}.pth')
+            # check all instances between td and self.trunk and load state dicts for only those that match
+            for k, v in td['model'].items():
+                if k in gene.state_dict():
+                    gene.state_dict()[k].copy_(v)
+                else:
+                    raise KeyError(f"Unrecognized key in pretrained weights: {k}")
+            
+            print(f"Loaded pretrained weights for {gene_cfg.custom_model_name}")
+
+
+    # hugging face model initialization + pretrained weights
+    # scVI + pretrained weights, GeneFormer + pretrained weights
+    # TBD Rushin: Massive changes for HF Gene Encoders 
+    elif gene_cfg.hf_model_name:
         gene = HFGeneEncoder(
             gene_cfg.hf_model_name,
             output_dim=embed_dim,
@@ -188,34 +245,11 @@ def _build_gene_tower(
             pretrained=gene_cfg.hf_model_pretrained,
             output_tokens=gene_cfg.output_tokens,
         )
-    else:
-        act_layer = QuickGELU if quick_gelu else nn.GELU
-        norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm
-        if gene_cfg.norm_kwargs:
-            norm_layer = partial(norm_layer, **gene_cfg.norm_kwargs)
-        if gene_cfg.act_kwargs is not None:
-            act_layer = partial(act_layer, **gene_cfg.act_kwargs)
 
-        gene = GeneTransformer(
-            context_length=gene_cfg.context_length,
-            vocab_size=gene_cfg.vocab_size,
-            width=gene_cfg.width,
-            heads=gene_cfg.heads,
-            layers=gene_cfg.layers,
-            mlp_ratio=gene_cfg.mlp_ratio,
-            ls_init_value=gene_cfg.ls_init_value,
-            output_dim=embed_dim,
-            embed_cls=gene_cfg.embed_cls,
-            no_causal_mask=gene_cfg.no_causal_mask,
-            pad_id=gene_cfg.pad_id,
-            pool_type=gene_cfg.pool_type,
-            proj_bias=gene_cfg.proj_bias,
-            output_tokens=gene_cfg.output_tokens,
-            act_layer=act_layer,
-            norm_layer=norm_layer,
-        )
+    gene.context_length = gene_cfg.context_length
+    gene.vocab_size = gene_cfg.vocab_size
+
     return gene
-
 
 class CLIP(nn.Module):
     output_dict: torch.jit.Final[bool]
@@ -225,7 +259,6 @@ class CLIP(nn.Module):
             embed_dim: int,
             vision_cfg: CLIPVisionCfg,
             gene_cfg: CLIPGeneCfg,
-            quick_gelu: bool = False,
             init_logit_scale: float = np.log(1 / 0.07),
             init_logit_bias: Optional[float] = None,
             cast_dtype: Optional[torch.dtype] = None,
@@ -234,100 +267,13 @@ class CLIP(nn.Module):
         super().__init__()
         self.output_dict = output_dict
 
-        self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
-
-        gene = _build_gene_tower(embed_dim, gene_cfg, quick_gelu, cast_dtype)
-        self.transformer = gene.transformer
-        self.context_length = gene.context_length
-        self.vocab_size = gene.vocab_size
-        self.token_embedding = gene.token_embedding
-        self.positional_embedding = gene.positional_embedding
-        self.ln_final = gene.ln_final
-        self.gene_projection = gene.gene_projection
-        self.gene_pool_type = gene.pool_type
-        self.register_buffer('attn_mask', gene.attn_mask, persistent=False)
-
-        self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
-        if init_logit_bias is not None:
-            self.logit_bias = nn.Parameter(torch.ones([]) * init_logit_bias)
-        else:
-            self.logit_bias = None
-
-    def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
-        # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
-        self.visual.lock(unlocked_groups=unlocked_groups, freeze_bn_stats=freeze_bn_stats)
-
-    @torch.jit.ignore
-    def set_grad_checkpointing(self, enable=True):
-        self.visual.set_grad_checkpointing(enable)
-        self.transformer.grad_checkpointing = enable
-
-    def encode_image(self, image, normalize: bool = False):
-        features = self.visual(image)
-        return F.normalize(features, dim=-1) if normalize else features
-
-    def encode_gene(self, gene, normalize: bool = False):
-        cast_dtype = self.transformer.get_cast_dtype()
-
-        x = self.token_embedding(gene).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-
-        x = x + self.positional_embedding.to(cast_dtype)
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x, attn_mask=self.attn_mask)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.ln_final(x)  # [batch_size, n_ctx, transformer.width]
-        x, _ = gene_global_pool(x, gene, self.gene_pool_type)
-        if self.gene_projection is not None:
-            if isinstance(self.gene_projection, nn.Linear):
-                x = self.gene_projection(x)
-            else:
-                x = x @ self.gene_projection
-
-        return F.normalize(x, dim=-1) if normalize else x
-
-    def forward(
-            self,
-            image: Optional[torch.Tensor] = None,
-            gene: Optional[torch.Tensor] = None,
-    ):
-        image_features = self.encode_image(image, normalize=True) if image is not None else None
-        gene_features = self.encode_gene(gene, normalize=True) if gene is not None else None
-
-        if self.output_dict:
-            out_dict = {
-                "image_features": image_features,
-                "gene_features": gene_features,
-                "logit_scale": self.logit_scale.exp()
-            }
-            if self.logit_bias is not None:
-                out_dict['logit_bias'] = self.logit_bias
-            return out_dict
-
-        if self.logit_bias is not None:
-            return image_features, gene_features, self.logit_scale.exp(), self.logit_bias
-        return image_features, gene_features, self.logit_scale.exp()
-
-
-class CustomGeneCLIP(nn.Module):
-    output_dict: torch.jit.Final[bool]
-
-    def __init__(
-            self,
-            embed_dim: int,
-            vision_cfg: CLIPVisionCfg,
-            gene_cfg: CLIPGeneCfg,
-            quick_gelu: bool = False,
-            init_logit_scale: float = np.log(1 / 0.07),
-            init_logit_bias: Optional[float] = None,
-            cast_dtype: Optional[torch.dtype] = None,
-            output_dict: bool = False,
-    ):
-        super().__init__()
-        self.output_dict = output_dict
-        self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
-        self.gene = _build_gene_tower(embed_dim, gene_cfg, quick_gelu, cast_dtype)
+        self.visual = _build_vision_tower(embed_dim, vision_cfg, cast_dtype)
+        
+        self.gene = _build_gene_tower(embed_dim, gene_cfg, cast_dtype)
+        
         self.context_length = self.gene.context_length
         self.vocab_size = self.gene.vocab_size
+        
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         if init_logit_bias is not None:
             self.logit_bias = nn.Parameter(torch.ones([]) * init_logit_bias)
@@ -429,65 +375,6 @@ def convert_to_custom_gene_state_dict(state_dict: dict):
     return state_dict
 
 
-def build_model_from_openai_state_dict(
-        state_dict: dict,
-        quick_gelu=True,
-        cast_dtype=torch.float16,
-):
-    vit = "visual.proj" in state_dict
-
-    if vit:
-        vision_width = state_dict["visual.conv1.weight"].shape[0]
-        vision_layers = len(
-            [k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
-        vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]
-        grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
-        image_size = vision_patch_size * grid_size
-    else:
-        counts: list = [
-            len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}"))) for b in [1, 2, 3, 4]]
-        vision_layers = tuple(counts)
-        vision_width = state_dict["visual.layer1.0.conv1.weight"].shape[0]
-        output_width = round((state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
-        vision_patch_size = None
-        assert output_width ** 2 + 1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
-        image_size = output_width * 32
-
-    embed_dim = state_dict["text_projection"].shape[1]
-    context_length = state_dict["positional_embedding"].shape[0]
-    vocab_size = state_dict["token_embedding.weight"].shape[0]
-    transformer_width = state_dict["ln_final.weight"].shape[0]
-    transformer_heads = transformer_width // 64
-    transformer_layers = len(set(k.split(".")[2] for k in state_dict if k.startswith(f"transformer.resblocks")))
-
-    vision_cfg = CLIPVisionCfg(
-        layers=vision_layers,
-        width=vision_width,
-        patch_size=vision_patch_size,
-        image_size=image_size,
-    )
-    text_cfg = CLIPTextCfg(
-        context_length=context_length,
-        vocab_size=vocab_size,
-        width=transformer_width,
-        heads=transformer_heads,
-        layers=transformer_layers,
-    )
-    model = CLIP(
-        embed_dim,
-        vision_cfg=vision_cfg,
-        text_cfg=text_cfg,
-        quick_gelu=quick_gelu,  # OpenAI models were trained with QuickGELU
-        cast_dtype=cast_dtype,
-    )
-
-    for key in ["input_resolution", "context_length", "vocab_size"]:
-        state_dict.pop(key, None)
-    convert_weights_to_fp16(model)  # OpenAI state dicts are partially converted to float16
-    model.load_state_dict(state_dict)
-    return model.eval()
-
-
 def trace_model(model, batch_size=256, device=torch.device('cpu')):
     model.eval()
     image_size = model.visual.image_size
@@ -537,7 +424,7 @@ def resize_pos_embed(state_dict, model, interpolation: str = 'bicubic', antialia
         new_pos_embed = pos_emb_img
     state_dict['visual.positional_embedding'] = new_pos_embed
 
-
+# TBD Rushin: Massive changes for Gene specific positional embedding
 def resize_gene_pos_embed(state_dict, model, interpolation: str = 'linear', antialias: bool = False):
     old_pos_embed = state_dict.get('positional_embedding', None)
     if old_pos_embed is None:
@@ -546,7 +433,7 @@ def resize_gene_pos_embed(state_dict, model, interpolation: str = 'linear', anti
     model_pos_embed = getattr(model, 'positional_embedding', None)
     if model_pos_embed is None:
         model_pos_embed = getattr(model.gene, 'positional_embedding', None)
-
+ 
     old_num_pos = old_pos_embed.shape[0]
     old_width = old_pos_embed.shape[1]
     num_pos = model_pos_embed.shape[0]

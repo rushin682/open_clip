@@ -1,0 +1,16 @@
+{
+    "embed_dim": 512,
+    "vision_cfg": {
+        "image_size": 224,
+        "layers": 12,
+        "width": 768,
+        "patch_size": 32
+    },
+    "gene_cfg": {
+        "context_length": 768,
+        "custom_model_name": "snn_small_omic",
+        "custom_model_pretrained": false,
+        "custom_proj": "identity",
+        "vocab_size": 36601 
+    }
+}

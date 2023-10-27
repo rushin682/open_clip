@@ -33,7 +33,7 @@ class CLIPVisionCfg:
 
     custom_model_name: str = None # a valid model name overrides layers, width, patch_sizes
     custom_model_pretrained: bool = False  # use (custom) pretrained weights for named model
-    custom_proj: str = 'linear'  # linear projection for custom model output ('linear', 'mlp', 'identity', '')
+    custom_proj: str = 'linear'  # linear projection for custom model output ('linear', 'mlp', 'identity')
 
 @dataclass
 class CLIPTextCfg:

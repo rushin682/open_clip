@@ -2,10 +2,19 @@ import logging
 
 import torch
 from tqdm import tqdm
+from contextlib import suppress
 
 from open_clip import get_input_dtype, get_tokenizer, build_zero_shot_classifier, \
     IMAGENET_CLASSNAMES, OPENAI_IMAGENET_TEMPLATES
-from .precision import get_autocast
+
+def get_autocast(precision):
+    if precision == 'amp':
+        return torch.cuda.amp.autocast
+    elif precision == 'amp_bfloat16' or precision == 'amp_bf16':
+        # amp_bfloat16 is more stable than amp float16 for clip training
+        return lambda: torch.cuda.amp.autocast(dtype=torch.bfloat16)
+    else:
+        return suppress
 
 
 def accuracy(output, target, topk=(1,)):

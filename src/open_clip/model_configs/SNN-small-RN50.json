@@ -11,11 +11,11 @@
         "width": 64,
         "patch_size": null
     },
-    "text_cfg": {
-        "context_length": 77,
-        "vocab_size": 49408,
-        "width": 512,
-        "heads": 8,
-        "layers": 12
+    "gene_cfg": {
+        "context_length": 768,
+        "custom_model_name": "snn_small_omic",
+        "custom_model_pretrained": false,
+        "custom_proj": "identity",
+        "vocab_size": 36601 
     }
 }
