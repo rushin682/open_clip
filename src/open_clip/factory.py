@@ -177,21 +177,9 @@ def create_model(
     force_preprocess_cfg = force_preprocess_cfg or {}
     preprocess_cfg = asdict(PreprocessCfg())
 
-    # if entire CLIP model is loaded from HF hub
-    has_hf_hub_prefix = model_name.startswith(HF_HUB_PREFIX)
-    if has_hf_hub_prefix:
-        model_id = model_name[len(HF_HUB_PREFIX):]
-        checkpoint_path = download_pretrained_from_hf(model_id, cache_dir=cache_dir)
-        config = _get_hf_config(model_id, cache_dir)
-        preprocess_cfg = merge_preprocess_dict(preprocess_cfg, config['preprocess_cfg'])
-        model_cfg = config['model_cfg']
-        pretrained_hf = False  # override, no need to load original HF gene weights
-
-    # else different config to create the CLIP model    
-    else:
-        model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
-        checkpoint_path = None
-        model_cfg = None
+    model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
+    checkpoint_path = None
+    model_cfg = None
 
     if isinstance(device, str):
         device = torch.device(device)
@@ -227,7 +215,7 @@ def create_model(
     cast_dtype = get_cast_dtype(precision)
     is_hf_model = 'hf_model_name' in model_cfg.get('gene_cfg', {})
     if is_hf_model:
-        # load pretrained weights for HF gene model IFF no CLIP weights being loaded
+        # load pretrained weights for HF gene model IF no CLIP weights being loaded
         model_cfg['gene_cfg']['hf_model_pretrained'] = pretrained_hf and not pretrained
 
     model_cfg = dict(model_cfg, **model_kwargs)  # merge cfg dict w/ kwargs (kwargs overrides cfg)

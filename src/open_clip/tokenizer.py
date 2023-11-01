@@ -257,7 +257,7 @@ class SimpleTokenizer(object):
 
         return result
 
-
+# FIXME Rushin: Convert SimpleTokenizer to GeneTokenizer. Remove everything, keep the concept of call function
 _tokenizer = SimpleTokenizer()
 
 
@@ -395,6 +395,7 @@ def get_reduction_mask_fn(type: str):
 
 class HFTokenizer:
     """HuggingFace tokenizer wrapper"""
+    # FIXME Rushin: Not required. Make it usable for gene hf tokenizer
 
     def __init__(
             self,
