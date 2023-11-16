@@ -120,7 +120,9 @@ class H5Dataset(Dataset):
 
         # h5_anndata_object is an efficient anndata object of the high resolution spatial file
         spot_idx = h5_object.obsm['spatial'].tolist().index(list(instance_coords))
-        gexp = h5_object.X[spot_idx].todense()
+
+        # gexp = h5_object.X[spot_idx].todense() # Or gene-expression from a specific layer for the spot
+        gexp = h5_object[spot_idx, :]
 
         return image, gexp
 

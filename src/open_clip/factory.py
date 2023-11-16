@@ -267,11 +267,7 @@ def create_model(
             logging.warning(error_str)
             raise RuntimeError(error_str)
         pretrained_loaded = True
-    elif has_hf_hub_prefix:
-        logging.info(f'Loading pretrained {model_name} weights ({checkpoint_path}).')
-        load_checkpoint(model, checkpoint_path)
-        pretrained_loaded = True
-
+    
     if require_pretrained and not pretrained_loaded:
         # callers of create_model_from_pretrained always expect pretrained weights
         raise RuntimeError(

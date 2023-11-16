@@ -8,7 +8,14 @@ import os
 import random
 import string
 from functools import lru_cache, partial
-from typing import Callable, Optional, List, Union
+from typing import Callable, Optional, List, Union, Literal
+import pickle
+from pathlib import Path
+import logging
+
+import anndata as ad
+import scipy.sparse as sp
+
 
 import ftfy
 import numpy as np
@@ -21,106 +28,153 @@ _nltk_init = False
 
 DEFAULT_CONTEXT_LENGTH = 77  # default context length for OpenAI CLIP
 
+logger = logging.getLogger(__name__)
 
-@lru_cache()
-def default_bpe():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "bpe_simple_vocab_16e6.txt.gz")
+GENE_MEDIAN_FILE = Path(__file__).parent / "gene_median_dictionary.pkl"
+TOKEN_DICTIONARY_FILE = Path(__file__).parent / "token_dictionary.pkl"
 
-
-@lru_cache()
-def bytes_to_unicode():
+def rank_genes(gene_vector, gene_tokens):
     """
-    Returns list of utf-8 byte and a corresponding list of unicode strings.
-    The reversible bpe codes work on unicode strings.
-    This means you need a large # of unicode characters in your vocab if you want to avoid UNKs.
-    When you're at something like a 10B token dataset you end up needing around 5K for decent coverage.
-    This is a significant percentage of your normal, say, 32K bpe vocab.
-    To avoid that, we want lookup tables between utf-8 bytes and unicode strings.
-    And avoids mapping to whitespace/control characters the bpe code barfs on.
+    Rank gene expression vector.
     """
-    bs = list(range(ord("!"), ord("~")+1))+list(range(ord("¡"), ord("¬")+1))+list(range(ord("®"), ord("ÿ")+1))
-    cs = bs[:]
-    n = 0
-    for b in range(2**8):
-        if b not in bs:
-            bs.append(b)
-            cs.append(2**8+n)
-            n += 1
-    cs = [chr(n) for n in cs]
-    return dict(zip(bs, cs))
+    # sort by median-scaled gene values
+    sorted_indices = np.argsort(-gene_vector)
+    return gene_tokens[sorted_indices]
 
-
-def get_pairs(word):
-    """Return set of symbol pairs in a word.
-    Word is represented as tuple of symbols (symbols being variable-length strings).
+def tokenize_cell(gene_vector, gene_tokens):
     """
-    pairs = set()
-    prev_char = word[0]
-    for char in word[1:]:
-        pairs.add((prev_char, char))
-        prev_char = char
-    return pairs
-
-
-def basic_clean(text):
-    text = ftfy.fix_text(text)
-    text = html.unescape(html.unescape(text))
-    return text.strip()
-
-
-def whitespace_clean(text):
-    text = re.sub(r'\s+', ' ', text)
-    text = text.strip()
-    return text
-
-
-def _clean_canonicalize(x):
-    # basic, remove whitespace, remove punctuation, lower case
-    return canonicalize_text(basic_clean(x))
-
-
-def _clean_lower(x):
-    # basic, remove whitespace, lower case
-    return whitespace_clean(basic_clean(x)).lower()
-
-
-def _clean_whitespace(x):
-    # basic, remove whitespace
-    return whitespace_clean(basic_clean(x))
-
-
-def get_clean_fn(type: str):
-    if type == 'canonicalize':
-        return _clean_canonicalize
-    elif type == 'lower':
-        return _clean_lower
-    elif type == 'whitespace':
-        return _clean_whitespace
-    else:
-        assert False, f"Invalid clean function ({type})."
-
-
-def canonicalize_text(text, *, keep_punctuation_exact_string=None):
-    """Returns canonicalized `text` (lowercase and punctuation removed).
-
-    From: https://github.com/google-research/big_vision/blob/53f18caf27a9419231bbf08d3388b07671616d3d/big_vision/evaluators/proj/image_text/prompt_engineering.py#L94
-
-    Args:
-      text: string to be canonicalized.
-      keep_punctuation_exact_string: If provided, then this exact string kept.
-        For example providing '{}' will keep any occurrences of '{}' (but will
-        still remove '{' and '}' that appear separately).
+    Convert normalized gene expression vector to tokenized rank value encoding.
     """
-    text = text.replace("_", " ")
-    if keep_punctuation_exact_string:
-        text = keep_punctuation_exact_string.join(
-            part.translate(str.maketrans("", "", string.punctuation))
-            for part in text.split(keep_punctuation_exact_string))
-    else:
-        text = text.translate(str.maketrans("", "", string.punctuation))
-    text = text.lower()
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    # create array of gene vector with token indices
+    # mask undetected genes
+    nonzero_mask = np.nonzero(gene_vector)[0]
+    # rank by median-scaled gene values
+    return rank_genes(gene_vector[nonzero_mask], gene_tokens[nonzero_mask])
+
+class GeneformerTokenizer(object):
+    def __init__(self, 
+                 nproc=1,
+                 gene_median_file=GENE_MEDIAN_FILE,
+                 token_dictionary_file=TOKEN_DICTIONARY_FILE
+    ):
+
+        """
+            Initialize tokenizer.
+            Parameters
+            ----------
+            custom_attr_name_dict : None, dict
+                Dictionary of custom attributes to be added to the dataset.
+                Keys are the names of the attributes in the loom file.
+                Values are the names of the attributes in the dataset.
+            nproc : int
+                Number of processes to use for dataset mapping.
+            gene_median_file : Path
+                Path to pickle file containing dictionary of non-zero median
+                gene expression values across Genecorpus-30M.
+            token_dictionary_file : Path
+                Path to pickle file containing token dictionary (Ensembl IDs:token).
+        """
+
+        # number of processes for dataset mapping
+        self.nproc = nproc
+
+        # load dictionary of gene normalization factors
+        # (non-zero median value of expression across Genecorpus-30M)
+        with open(gene_median_file, "rb") as f:
+            self.gene_median_dict = pickle.load(f)
+
+        # load token dictionary (Ensembl IDs:token)
+        with open(token_dictionary_file, "rb") as f:
+            self.gene_token_dict = pickle.load(f)
+
+        # gene keys for full vocabulary
+        self.gene_keys = list(self.gene_median_dict.keys())
+
+        # protein-coding and miRNA gene list dictionary for selecting .loom rows for tokenization
+        self.genelist_dict = dict(zip(self.gene_keys, [True] * len(self.gene_keys)))
+    
+    def tokenize_anndata(self, gexp, target_sum=10_000, chunk_size=512):
+        
+        expression = gexp.X.todense() # If needed, convert to dense matrix. Try to avoid this
+
+        coding_miRNA_loc = np.where(
+            [self.genelist_dict.get(i, False) for i in gexp.var["ensembl_id"]]
+        )[0]
+        norm_factor_vector = np.array(
+            [
+                self.gene_median_dict[i]
+                for i in gexp.var["ensembl_id"][coding_miRNA_loc]
+            ]
+        )
+        coding_miRNA_ids = gexp.var["ensembl_id"][coding_miRNA_loc]
+        coding_miRNA_tokens = np.array(
+            [self.gene_token_dict[i] for i in coding_miRNA_ids]
+        )
+
+        try:
+            _ = gexp.obs["filter_pass"]
+        except KeyError:
+            var_exists = False
+        else:
+            var_exists = True
+
+        if var_exists:
+            filter_pass_loc = np.where(
+                [i == 1 for i in adata.obs["filter_pass"]]
+            )[0]
+        elif not var_exists:
+            print(
+                f"{adata_file_path} has no column attribute 'filter_pass'; tokenizing all cells."
+            )
+            filter_pass_loc = np.array([i for i in range(adata.shape[0])])
+
+        tokenized_cells = []
+
+        for i in range(0, len(filter_pass_loc), chunk_size):
+            idx = filter_pass_loc[i:i+chunk_size]
+
+            n_counts = adata[idx].obs['n_counts'].values[:, None]
+            X_view = adata[idx, coding_miRNA_loc].X
+            X_norm = (X_view / n_counts * target_sum / norm_factor_vector)
+            X_norm = sp.csr_matrix(X_norm)
+
+            tokenized_cells += [
+                rank_genes(X_norm[i].data, coding_miRNA_tokens[X_norm[i].indices])
+                for i in range(X_norm.shape[0])
+            ]
+
+            # add custom attributes for subview to dict
+            if self.custom_attr_name_dict is not None:
+                for k in file_cell_metadata.keys():
+                    file_cell_metadata[k] += adata[idx].obs[k].tolist()
+            else:
+                file_cell_metadata = None
+
+        return tokenized_cells, file_cell_metadata
+    
+    def __call__(self, gexp, context_length: Optional[int] = None) -> torch.Tensor:
+        """
+        Returns the tokenized representation of given input gexp(s) from GeneFormer paper
+        Parameters
+        ----------
+        gexp : Union[numpy/list, List[numpy/list]]
+            An input gexpr or a list of input gexpr to tokenize
+        context_length : int
+            The context length to use as input to GeneFormer; 
+
+        Returns
+        -------
+        A two-dimensional tensor containing the resulting tokens, shape = [number of input gexp, context_length]
+        """
+        
+        accum_tokenized_gexp = []
+        
+        tokenized_gexp = self.tokenize_anndata(gexp)
+        accum_tokenized_gexp.append(tokenized_gexp)
+
+        return accum_tokenized_gexp
+    
+        # save tokenized dataset as an anndata object for each sample.
 
 
 class SimpleTokenizer(object):
@@ -259,138 +313,6 @@ class SimpleTokenizer(object):
 
 # FIXME Rushin: Convert SimpleTokenizer to GeneTokenizer. Remove everything, keep the concept of call function
 _tokenizer = SimpleTokenizer()
-
-
-def decode(output_ids: torch.Tensor):
-    output_ids = output_ids.cpu().numpy()
-    return _tokenizer.decode(output_ids)
-
-
-def tokenize(texts: Union[str, List[str]], context_length: int = DEFAULT_CONTEXT_LENGTH) -> torch.LongTensor:
-    return _tokenizer(texts, context_length=context_length)
-
-
-def random_mask_tokenize(
-        texts: Union[str, List[str]],
-        context_length: int,
-        sot_token_id: int,
-        eot_token_id: int,
-        encode_fn: Callable,
-        shuffle: bool = False,
-):
-    all_tokens = [encode_fn(text) for text in texts]
-    result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
-
-    for i, tokens in enumerate(all_tokens):
-        tokens = torch.tensor(tokens)
-        num_tokens = len(tokens)
-        if num_tokens > context_length - 2:  # 2 for sot and eot token
-            num_keep = context_length - 2
-            indices = torch.randperm(len(tokens))
-            indices = indices[:num_keep]
-            if not shuffle:
-                indices = indices.msort()
-            tokens = tokens[indices]
-            num_tokens = num_keep
-        result[i, 0] = sot_token_id
-        result[i, 1:num_tokens + 1] = tokens
-        result[i, num_tokens + 1] = eot_token_id
-
-    return result
-
-
-def simple_mask_tokenize(
-        texts: Union[str, List[str]],
-        context_length: int,
-        sot_token_id: int,
-        eot_token_id: int,
-        encode_fn: Callable,
-):
-    all_tokens = [encode_fn(text) for text in texts]
-    result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
-
-    for i, tokens in enumerate(all_tokens):
-        num_tokens = len(tokens)
-        if num_tokens > context_length - 2:  # 2 for sot and eot token
-            num_keep = context_length - 2
-            start_index = random.randint(0, num_tokens - num_keep)  # high is incl
-            tokens = tokens[start_index: start_index + num_keep]
-        tokens = [sot_token_id] + tokens + [eot_token_id]
-        result[i, :len(tokens)] = torch.tensor(tokens)
-
-    return result
-
-
-def syntax_mask_tokenize(
-        texts: Union[str, List[str]],
-        context_length: int,
-        sot_token_id: int,
-        eot_token_id: int,
-        encode_fn: Callable,
-) -> torch.LongTensor:
-    """ Returns the tokenized representation of given input string(s).
-    Apply syntax masking before tokenize.
-    """
-    import nltk
-    global _nltk_init
-    if not _nltk_init:
-        # run them for the first time
-        nltk.download('punkt')
-        nltk.download('averaged_perceptron_tagger')
-        _nltk_init = True
-
-    def get_order(x):
-        if x.startswith('NN'):
-            return 1
-        elif x.startswith('JJ'):
-            return 2
-        elif x.startswith('VB'):
-            return 3
-        else:
-            return 4
-
-    # syntax masking
-    new_texts = []
-    for text in texts:
-        list_tokens = nltk.tokenize.word_tokenize(text)
-        pos_tags = nltk.pos_tag(list_tokens)
-        #  sample the words by get_order method
-        order_list = [get_order(tag) for _, tag in pos_tags]
-        sorted_ids = np.argsort(np.array(order_list))
-        sampled_ids = sorted(sorted_ids[:context_length - 2]) # need 2 slots for sot and eot tokens
-        sampled_tokens = np.take(np.array(list_tokens), sampled_ids, axis=0)  # sample the tokens
-
-        new_text = ''
-        for token in sampled_tokens:
-            new_text = new_text + str(token) + ' '
-        new_text = new_text.strip()
-        new_texts.append(new_text)
-    texts = new_texts
-
-    all_tokens = [[sot_token_id] + encode_fn(text) + [eot_token_id] for text in texts]
-    result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
-
-    for i, tokens in enumerate(all_tokens):
-        # still need first truncate because some words produces two tokens
-        if len(tokens) > context_length:
-            tokens = tokens[:context_length]  # Truncate
-            tokens[-1] = eot_token_id
-        result[i, :len(tokens)] = torch.tensor(tokens)
-
-    return result
-
-
-def get_reduction_mask_fn(type: str):
-    """ Choose strategy for dropping (masking) tokens to achieve target context length"""
-    assert type in ('simple', 'random', 'shuffle', 'syntax')
-    if type == 'simple':
-        return simple_mask_tokenize  # randomly select block [start:end]
-    elif type == 'random':
-        return random_mask_tokenize  # randomly drop tokens (keep order)
-    elif type == 'shuffle':
-        return partial(random_mask_tokenize, shuffle=True)  # randomly drop tokens (shuffle order)
-    elif type == 'syntax':
-        return syntax_mask_tokenize  # randomly drop prioritized by syntax
 
 
 class HFTokenizer:
