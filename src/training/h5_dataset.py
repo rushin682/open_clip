@@ -77,6 +77,14 @@ class H5Dataset(Dataset):
 
             h5_object = self.read_anndata(h5_name)   
 
+            # tokenize according to geneformer, scGPT, snn, scVI etc.
+
+            # FIXME: Rushin use saved anndata object to get the tokenizer features
+            # if file in tokenizer directory, then use that tokenizer
+            # else use the default tokenizer
+
+            h5_object = self.tokenizer(h5_object)
+
             h5_image_path = h5_object.uns['spatial'][h5_name]['metadata']['source_image_path'] 
             h5_image_object = openslide.open_slide(h5_image_path)
             
@@ -122,7 +130,14 @@ class H5Dataset(Dataset):
         spot_idx = h5_object.obsm['spatial'].tolist().index(list(instance_coords))
 
         # gexp = h5_object.X[spot_idx].todense() # Or gene-expression from a specific layer for the spot
-        gexp = h5_object[spot_idx, :]
+        if self.tokenizer == GeneTokenizer:
+            gexp = h5_object.obsm['geneformer_emb'][spot_idx].todense()
+        elif self.tokenizer == ScGPTTokenizer:
+            gexp = h5_object.obsm['scGPT_emb'][spot_idx].todense()
+        elif self.tokenizer == ScVITokenizer:
+            gexp = h5_object.obsm['scVI_emb'][spot_idx].todense()
+        if self.tokenizer is None:
+            gexp = h5_object.X[spot_idx].todense()
 
         return image, gexp
 
